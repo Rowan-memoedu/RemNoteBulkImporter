@@ -53,12 +53,13 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
           case 'image': {
             const a=assets[s.assetId];
             if(legacyImages){part=await call('richText.legacyImage',()=>plugin.richText.image(`data:${a.mime};base64,${a.base64}`).value());break;}
-            part=[await nativeImage(s.assetId,a,{
+            const image=await nativeImage(s.assetId,a,{
               get:(hash:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(`rbi-image:${kbId}:${hash}`)),
               set:(hash:string,value:any)=>call('storage.setLocal',()=>plugin.storage.setLocal(`rbi-image:${kbId}:${hash}`,value)),
               parse:(markdown:string)=>call('richText.uploadImage',()=>plugin.richText.parseFromMarkdown(markdown)),
               verify:(assetId:string,url:string)=>call('media.verify',()=>verifyMedia(assetId,url)),
-            })];break;
+            });
+            compatibility.register(s.assetId,image);part=[image];break;
           }
           default: throw new Error('Unsupported RichText segment');
         }

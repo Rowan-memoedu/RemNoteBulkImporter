@@ -15,11 +15,18 @@ export async function naturalDimensions(asset){
 export function imageReadbackCompatibility(assets,{loadCached,verify}){
   const sources=new Map(),verified=new Set(),dimensions=new Map();let cachedLoaded=false;
   for(const [id,asset] of Object.entries(assets))sources.set(`data:${asset.mime};base64,${asset.base64}`,{id,asset,original:{i:'i',url:`data:${asset.mime};base64,${asset.base64}`}});
+  function register(id,original){
+    const asset=assets[id];
+    if(!asset||original?.i!=='i'||!original.url?.startsWith('%LOCAL_FILE%'))throw new Error('Cannot register image outside source assets');
+    const prior=sources.get(original.url);
+    if(prior&&prior.asset.sha256!==asset.sha256)throw new Error('Managed image URL maps to different source bytes');
+    sources.set(original.url,{id,asset,original:structuredClone(original)});
+  }
   async function source(url){
     if(!sources.has(url)&&!cachedLoaded){
       for(const [id,asset] of Object.entries(assets)){
         const original=await loadCached(asset.sha256);
-        if(original?.i==='i'&&original.url?.startsWith('%LOCAL_FILE%'))sources.set(original.url,{id,asset,original});
+        if(original?.i==='i'&&original.url?.startsWith('%LOCAL_FILE%'))register(id,original);
       }
       cachedLoaded=true;
     }
@@ -49,5 +56,5 @@ export function imageReadbackCompatibility(assets,{loadCached,verify}){
     }
     return result;
   }
-  return {input};
+  return {input,register};
 }

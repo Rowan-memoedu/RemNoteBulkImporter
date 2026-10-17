@@ -1,4 +1,4 @@
-import importlib.util, unittest, argparse, tempfile
+import importlib.util, unittest, argparse, tempfile, zipfile, json
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('ma',Path(__file__).parents[1]/'consumers'/'math_academy.py')
 ma=importlib.util.module_from_spec(spec);spec.loader.exec_module(ma)
@@ -70,5 +70,90 @@ class ConversionTests(unittest.TestCase):
         self.assertTrue(all(nodes[k]['document'] for k in ['u2','u5','u2.m1','u2.m3','u5.m1','t31','t32','t41']))
         self.assertFalse(any(k.endswith('.meta') for k in nodes))
         self.assertEqual(nodes['t41.pre32']['text'],[{'kind':'ref','targetId':'t32'}])
+
+    def test_empty_fields_and_lessons_get_visible_placeholders(self):
+        self.c.add_field('field','parent',None,'field')
+        self.c.labeled_field('example','parent','解答','','example')
+        self.assertEqual([g['kind'] for g in self.c.gaps],['missing_content']*2)
+        self.assertIn('源资料未提供',self.c.nodes[0]['text'][0]['value'])
+        self.assertIn('源资料未提供',self.c.nodes[1]['text'][1]['value'])
+
+    def test_external_source_must_be_explicit_when_catalogs_disagree(self):
+        def topic(tid,cid,pre):return {'id':tid,'name':str(tid),'course':{'id':cid},'prerequisites':pre}
+        path=Path(self.tmp.name)/'graphs.zip'
+        with zipfile.ZipFile(path,'w') as z:
+            for cid,ts in [(999,{'30':topic(30,999,[10])}),(111,{'10':topic(10,111,[5]),'5':topic(5,111,[])}),(222,{'10':topic(10,222,[])})]:
+                z.writestr(f'course-knowledge-graph/course-{cid}.json',json.dumps({'topics':ts}))
+        with self.assertRaisesRegex(ValueError,'explicit'):ma.course_graph(path,999)
+        with self.assertRaisesRegex(ValueError,'Conflicting'):ma.course_graph(path,999,True)
+        graph,main=ma.course_graph(path,999,True,111)
+        self.assertEqual(main,{'30'});self.assertEqual(set(graph),{'30','10','5'})
+        self.assertLess(ma.dependency_order(graph)['5'],ma.dependency_order(graph)['10'])
+        self.assertLess(ma.dependency_order(graph)['10'],ma.dependency_order(graph)['30'])
+
+    def test_external_hierarchy_is_namespaced_and_numeric_unit_policy_preserves_number(self):
+        t={'course':{'id':111},'unit':{'number':3,'name':'Source label'},'module':{'number':8}}
+        self.assertEqual(ma.hierarchy_ids(t,999),('external.c111.u3','external.c111.u3.m8'))
+        self.assertEqual(ma.unit_label(t,argparse.Namespace(unit_labels='numeric',course_id=111)),'单元 3')
+        self.assertEqual(t['unit']['name'],'Source label')
+
+    def test_missing_snapshot_requires_opt_in_and_does_not_fabricate_progress(self):
+        root=Path(self.tmp.name);graph=root/'g.zip';progress=root/'p.zip';topics=root/'t.zip'
+        t={'id':17,'name':'Fixture','prerequisites':[],'course':{'id':999,'name':'Source'},'unit':{'number':1,'name':'U'},'module':{'number':1,'name':'M'}}
+        with zipfile.ZipFile(graph,'w') as z:z.writestr('course-knowledge-graph/course-999.json',json.dumps({'topics':{'17':t}}))
+        with zipfile.ZipFile(progress,'w'):pass
+        with zipfile.ZipFile(topics,'w') as z:z.writestr('topic-json/topic-17.json',json.dumps({'lesson':{'topic':{'id':17},'steps':[]}}))
+        self.c.args=argparse.Namespace(output=self.tmp.name,graph=str(graph),progress=str(progress),topics=str(topics),course_id=999,title='Fixture')
+        with self.assertRaisesRegex(ValueError,'explicit'):self.c.load()
+        self.c.args.allow_missing_progress=True;self.c.load();self.c.convert()
+        self.assertIsNone(self.c.progress);self.assertIsNone(self.c.progress_name)
+        self.assertEqual(self.c.plan['provenance']['topicOrderSource'],'source-groups-and-prerequisite-DAG')
+        self.assertEqual(self.c.gaps,[{'kind':'missing_lesson','where':'t17'}])
+
+    def test_dependency_cycle_is_rejected(self):
+        with self.assertRaisesRegex(ValueError,'cycle'):ma.dependency_order({'10':{'prerequisites':[11]},'11':{'prerequisites':[10]}})
+
+    def test_field_local_macro_definitions_expand_across_separate_expressions(self):
+        source=r'[math]\newcommand{\myop}{\mathop{\rm custom}\nolimits}[/math] Value [math]\myop{x}+2[/math].'
+        blocks=self.c.field(source,'independent-macro')
+        formula=[s for b in blocks for s in b if s['kind']=='latex']
+        self.assertEqual(len(formula),1)
+        self.assertEqual(formula[0]['value'],r'\mathop{\rm custom}\nolimits{x}+2')
+        self.assertNotIn('newcommand',str(blocks))
+
+    def test_field_local_macros_do_not_modify_drawing_source_or_other_fields(self):
+        drawing=r'\documentclass{standalone}\newcommand{\same}{picture}\begin{document}X\end{document}'
+        self.c.field(drawing+r'[math]\newcommand{\same}{lesson}\same[/math]','different-context')
+        self.assertEqual(next(iter(self.c.drawings.values()))['source'],drawing)
+        blocks=self.c.field(r'[math]\same[/math]','another-field')
+        self.assertEqual(blocks[0][0]['value'],r'\same')
+
+    def test_math_macro_cycles_reject_instead_of_silently_changing_payload(self):
+        with self.assertRaisesRegex(ValueError,'Recursive'):ma.expand_source_macros(r'\a', {r'\a':r'\b',r'\b':r'\a'})
+
+    def test_code_is_protected_before_math_or_paragraph_parsing(self):
+        original='if x &lt; 3:\n    print("$literal$")\n\n    # still indented\n    x += 1'
+        blocks=self.c.field('<p>Before</p><pre><code>'+original+'</code></pre><p>After</p>','code-fixture')
+        code=[s for b in blocks for s in b if s['kind']=='code']
+        self.assertEqual(code,[{'kind':'code','value':original.replace('&lt;','<')}])
+        self.assertEqual(self.c.stats['formulas'],0);self.assertFalse(self.c.gaps)
+
+    def test_rendered_field_selects_one_copy_of_code_and_keeps_math(self):
+        source='<p><code>mod</code> [math]x[/math]</p>'
+        rendered='<body><p><code>mod</code> <svg><title>x</title></svg></p></body>'
+        blocks=self.c.field(source,'rendered-code',rendered)
+        self.assertEqual([s['value'] for b in blocks for s in b if s['kind']=='code'],['mod'])
+        self.assertFalse(self.c.gaps)
+
+    def test_legacy_body_prefers_structured_response_and_never_parses_embedded_answers(self):
+        step={'id':819,'number':1,'question':{'text':'Compute','body':'legacy answer: 99',
+            'freeResponse':{'segments':[{'text':'$x=$'},{'textbox':{'type':'number','answer':'17'}}]}}}
+        self.c.question('47',step,'t47')
+        nodes={n['id']:n for n in self.c.nodes}
+        self.assertEqual(nodes['t47.s819.fr.answer0.text.p0']['text'][0]['value'],'17')
+        self.assertNotIn('t47.s819.body-source.raw',nodes)
+        step['id']=820;step['question'].pop('freeResponse');self.c.question('47',step,'t47')
+        nodes={n['id']:n for n in self.c.nodes}
+        self.assertEqual(nodes['t47.s820.body-source.raw']['text'],[{'kind':'code','value':'legacy answer: 99'}])
 
 if __name__=='__main__':unittest.main()

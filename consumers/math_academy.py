@@ -13,6 +13,7 @@ from PIL import Image, ImageChops
 
 TEX = re.compile(r'\\documentclass(?:\[[^\]]*\])?\s*\{[^}]+\}.*?\\end\{document\}',re.S)
 IMG = re.compile(r'<img\b[^>]*?\bsrc=[\"\']([^\"\']+)[\"\'][^>]*>',re.I)
+CODE_HTML = re.compile(r'<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>',re.S|re.I)
 MATH = re.compile(r'\[math\](.*?)\[/math\]|\\\[(.*?)\\\]|\\\((.*?)\\\)|\$\$(.*?)\$\$|(?<!\\)\$(?!\$)(.*?)(?<!\\)\$|\\begin\{(align\*?|equation\*?|gather\*?|multline\*?)\}(.*?)\\end\{\6\}',re.S)
 
 def digest(b): return hashlib.sha256(b if isinstance(b,bytes) else b.encode('utf-8')).hexdigest()
@@ -21,10 +22,27 @@ def dump(file,obj):
     file.write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
 
 class ToMarkdown(HTMLParser):
-    def __init__(self): super().__init__(convert_charrefs=True);self.out=[];self.unknown=set()
+    def __init__(self):
+        super().__init__(convert_charrefs=True);self.out=[];self.unknown=set()
+        self.pre=None;self.inline_code=None;self.code_language='';self.code_blocks=[]
+    @staticmethod
+    def code_fence(value,minimum):
+        return '`'*max(minimum,max((len(m.group())+1 for m in re.finditer(r'`+',value)),default=minimum))
     def handle_starttag(self,tag,attrs):
         attrs=dict(attrs)
-        if tag in ['p','div','section','tr','blockquote']: self.out.append('\n\n')
+        if self.pre is not None:
+            if tag=='br':self.pre.append('\n')
+            if tag=='code':
+                language=re.search(r'(?:^|\s)language-([\w+-]+)(?:\s|$)',attrs.get('class',''))
+                if language:self.code_language=language.group(1)
+            return
+        if self.inline_code is not None:
+            if tag=='br':self.inline_code.append('\n')
+            return
+        if tag=='pre':self.pre=[];self.code_language=''
+        elif tag=='code':self.inline_code=[]
+        elif tag=='hr':self.out.append('\n\n')
+        elif tag in ['p','div','section','tr','blockquote']: self.out.append('\n\n')
         elif tag in ['h1','h2','h3','h4','h5','h6']:self.out.append('\n\n**')
         elif tag in ['br']: self.out.append('\n')
         elif tag=='li': self.out.append('\n* ')
@@ -35,12 +53,27 @@ class ToMarkdown(HTMLParser):
         elif tag=='img': self.out.append(f"MISSING_IMAGE:{attrs.get('src','')}")
         elif tag not in ['span','ul','ol','table','tbody','thead','a','u']:self.unknown.add(tag)
     def handle_endtag(self,tag):
+        if self.pre is not None:
+            if tag=='pre':
+                value=''.join(self.pre);token=f'RBICODEBLOCK{len(self.code_blocks)+1:08d}END'
+                self.code_blocks.append({'token':token,'value':value,'language':self.code_language})
+                self.out.append('\n\n'+token+'\n\n');self.pre=None
+            return
+        if self.inline_code is not None:
+            if tag=='code':
+                value=''.join(self.inline_code);fence=self.code_fence(value,1)
+                pad=' ' if value.startswith(('`',' ')) or value.endswith(('`',' ')) else ''
+                self.out.append(fence+pad+value+pad+fence);self.inline_code=None
+            return
         if tag in ['p','div','section','tr','blockquote']:self.out.append('\n\n')
         elif tag in ['h1','h2','h3','h4','h5','h6']:self.out.append('**\n\n')
         elif tag in ['strong','b']:self.out.append('**')
         elif tag in ['em','i']:self.out.append('*')
         elif tag in ['sup','sub']:self.out.append(')')
-    def handle_data(self,data):self.out.append(data)
+    def handle_data(self,data):
+        if self.pre is not None:self.pre.append(data)
+        elif self.inline_code is not None:self.inline_code.append(data)
+        else:self.out.append(data)
 
 def tex_compatible(source):
     # Source-neutral old-MA syntax normalization; originals remain untouched.
@@ -96,6 +129,28 @@ def group_macro(value,name,transform):
         replacement=transform(body,m.group(1));value=value[:m.start()]+replacement+value[end+1:];pos=m.start()+len(replacement)
     return value
 
+def extract_source_macros(source):
+    """Retain field-local zero-argument TeX declarations as explicit context.
+    They are formatting instructions, not displayed mathematics. Do not parse
+    drawing documents here; callers protect those first. Other definitions stay
+    unchanged so the strict native-math audit can reject unsupported syntax.
+    """
+    pattern=re.compile(r'\\(?:newcommand|renewcommand|providecommand)\s*\{\s*(\\[A-Za-z]+)\s*\}\s*\{')
+    macros={};out=[];pos=0
+    for m in pattern.finditer(source):
+        if m.start()<pos:continue
+        end=group_end(source,m.end()-1)
+        macros[m.group(1)]=source[m.end():end]
+        out.append(source[pos:m.start()]);pos=end+1
+    out.append(source[pos:]);return ''.join(out),macros
+
+def expand_source_macros(value,macros):
+    for _ in range(32):
+        expanded=re.sub(r'\\[A-Za-z]+',lambda m:macros.get(m.group(),m.group()),value)
+        if expanded==value:return value
+        value=expanded
+    raise ValueError('Recursive or excessively nested source math macro')
+
 def latex_compatible(value):
     # Equivalent MathJax/old plain-TeX notation, with all mathematical payloads
     # retained. Raw input and rendered original titles stay in source exports.
@@ -110,7 +165,7 @@ def latex_compatible(value):
     value=group_macro(value,'bbox',bbox)
     value=re.sub(r'\\bbox\[([^\]]+)\]\s*([^\s{}\\&])',lambda m:bbox(m.group(2),m.group(1)),value)
     value=group_macro(value,'enclose',lambda b,o:r'\boxed{'+b+'}') if r'\enclose[' in value else value
-    value=value.replace(r'\artanh',r'\operatorname{artanh}')
+    value=re.sub(r'\\artanh\b',lambda m:r'\operatorname{artanh}',value)
     value=value.replace(r'\begin{eqnarray*}',r'\begin{aligned}').replace(r'\end{eqnarray*}',r'\end{aligned}')
     value=re.sub(r'(?<!\\)_{2,}',lambda m:r'\_'*len(m.group()),value)
     pos=0
@@ -151,6 +206,49 @@ def substitute_math(source,transform):
         out.append(source[pos:m.start()]);out.append(transform(value,block));pos=end+len(closing)
     return ''.join(out)
 
+def course_graph(path,course_id,include_external=False,external_course_id=None):
+    with zipfile.ZipFile(path) as z:
+        main=json.loads(z.read(f'course-knowledge-graph/course-{course_id}.json'))['topics']
+        assert main,'Course graph is empty'
+        graph=dict(main);pending={str(p) for t in graph.values() for p in t['prerequisites']} - set(graph)
+        if pending and not include_external:raise ValueError('Course has external prerequisites; explicit --include-external-prerequisites is required: '+','.join(sorted(pending,key=int)))
+        catalog=None
+        while pending:
+            if catalog is None:
+                catalog=collections.defaultdict(list)
+                for name in z.namelist():
+                    if re.fullmatch(r'course-knowledge-graph/course-\d+\.json',name):
+                        for tid,t in json.loads(z.read(name)).get('topics',{}).items():catalog[tid].append(t)
+            tid=min(pending,key=int);pending.remove(tid)
+            if tid in graph:continue
+            candidates=catalog.get(tid,[])
+            if external_course_id is not None:candidates=[t for t in candidates if int(t['course']['id'])==int(external_course_id)]
+            if not candidates:raise ValueError(f'External prerequisite absent from supplied graphs: {tid}')
+            signatures={(t['name'],tuple(sorted(t['prerequisites']))) for t in candidates}
+            if len(signatures)!=1:raise ValueError(f'Conflicting supplied prerequisite Topic: {tid}')
+            graph[tid]=min(candidates,key=lambda t:int(t['course']['id']))
+            pending.update(str(p) for p in graph[tid]['prerequisites'] if str(p) not in graph)
+    return graph,set(main)
+
+def dependency_order(graph):
+    remaining=set(graph);result=[]
+    while remaining:
+        ready=sorted((tid for tid in remaining if not any(str(p) in remaining for p in graph[tid]['prerequisites'])),key=int)
+        if not ready:raise ValueError('Supplied prerequisite graph contains a cycle')
+        result.extend(ready);remaining.difference_update(ready)
+    return {tid:i for i,tid in enumerate(result)}
+
+def hierarchy_ids(topic,course_id):
+    cid=topic.get('course',{}).get('id',course_id)
+    prefix='' if int(cid)==int(course_id) else f'external.c{cid}.'
+    unit=f'{prefix}u{topic["unit"]["number"]}'
+    return unit,f'{unit}.m{topic["module"]["number"]}'
+
+def unit_label(topic,args):
+    base=f'单元 {topic["unit"]["number"]}'
+    numeric=getattr(args,'unit_labels','source')=='numeric' and int(topic.get('course',{}).get('id',args.course_id))==args.course_id
+    return base if numeric else base+'：'+topic['unit']['name']
+
 class Converter:
     def __init__(self,args):
         self.args=args;self.root=Path(args.output);self.root.mkdir(parents=True,exist_ok=True)
@@ -160,16 +258,18 @@ class Converter:
         self.invalid_math={d['value'] for d in json.loads(Path(audit).read_text(encoding='utf-8'))['details']} if audit else set()
 
     def load(self):
-        with zipfile.ZipFile(self.args.graph) as z:
-            graph=json.loads(z.read(f'course-knowledge-graph/course-{self.args.course_id}.json'))
-        self.graph=graph['topics'];self.course=next(iter(self.graph.values()))['course']
+        self.graph,self.main_ids=course_graph(self.args.graph,self.args.course_id,getattr(self.args,'include_external_prerequisites',False),getattr(self.args,'external_course_id',None))
+        dump(self.root/'source'/'resolved-graph.json',{'topics':self.graph,'courseTopicIds':sorted(self.main_ids,key=int)})
+        self.course=next(self.graph[tid]['course'] for tid in self.graph if tid in self.main_ids)
+        rank=dependency_order(self.graph)
         with zipfile.ZipFile(self.args.progress) as z:
             names=sorted(n for n in z.namelist() if re.fullmatch(rf'ma-[^/]+/progress/course_{self.args.course_id}_\d{{4}}-\d{{2}}-\d{{2}}\.json',n))
-            assert names,'Course progress snapshot missing'
-            self.progress_name=names[-1];self.progress=json.loads(z.read(names[-1]))['topics']
-            assert set(self.progress)==set(self.graph),'Topic identity conflict'
-            for tid,t in self.graph.items():
-                assert t['name']==self.progress[tid]['name'] and t['prerequisites']==self.progress[tid]['prerequisites'],f'Graph/progress conflict {tid}'
+            if not names and not getattr(self.args,'allow_missing_progress',False):raise ValueError('Course progress snapshot missing; explicit --allow-missing-progress is required')
+            self.progress_name=names[-1] if names else None;self.progress=json.loads(z.read(names[-1]))['topics'] if names else None
+            if self.progress is not None:
+                assert set(self.progress)==self.main_ids,'Topic identity conflict'
+                for tid in self.main_ids:
+                    t=self.graph[tid];assert t['name']==self.progress[tid]['name'] and t['prerequisites']==self.progress[tid]['prerequisites'],f'Graph/progress conflict {tid}'
             # Only supplied answer source objects are used; learner/session metadata is discarded.
             self.answer_questions={}
             for n in z.namelist():
@@ -203,7 +303,11 @@ class Converter:
                     q=step.get('question') or {};extra=self.answer_questions.get(str(q.get('id')))
                     if not q.get('text') and extra and extra.get('text'):
                         step['question']={**extra,**{k:v for k,v in q.items() if v is not None}};self.stats['questions_recovered']+=1
-        self.order=sorted(self.graph,key=lambda tid:(self.progress[tid]['unit']['number'],self.progress[tid]['module']['number'],self.progress[tid]['number'],int(tid)))
+        def position(tid):
+            t=self.graph[tid];outside=tid not in self.main_ids
+            number=self.progress[tid]['number'] if self.progress is not None and not outside else rank[tid]
+            return (outside,int(t['course']['id']) if outside else 0,t['unit']['number'],t['module']['number'],number,int(tid))
+        self.order=sorted(self.graph,key=position)
         self.source_hashes={k:digest(Path(getattr(self.args,k)).read_bytes()) for k in ['graph','progress','topics']}
 
     def image(self,source,where):
@@ -228,7 +332,16 @@ class Converter:
         if rendered:
             rendered=re.sub(r'<!--.*?-->','',rendered,flags=re.S)
             rendered=re.sub(r'<(?:style|script)\b[^>]*>.*?</(?:style|script)>','',rendered,flags=re.S|re.I)
-        documents=list(TEX.finditer(source));imgs=IMG.findall(rendered or '')
+        def protect_code(value):
+            def code(m):
+                fragment=m.group();parser=ToMarkdown()
+                parser.feed(fragment if re.match(r'<pre\b',fragment,re.I) else '<pre>'+fragment+'</pre>')
+                if len(parser.code_blocks)!=1:raise ValueError(f'Cannot preserve source code block at {where}')
+                return self.token([{'kind':'code','value':parser.code_blocks[0]['value']}])
+            return CODE_HTML.sub(code,value)
+        document_source=CODE_HTML.sub('',source)
+        documents=list(TEX.finditer(document_source));imgs=IMG.findall(CODE_HTML.sub('',rendered or ''))
+        _,macros=extract_source_macros(TEX.sub('',document_source))
         if rendered is not None and len(documents)!=len(imgs):raise ValueError(f'Graphic/source mismatch {where}')
         local_graphics={url.split('/')[-1]:doc.group() for url,doc in zip(imgs,documents)}
         rendered_svgs=re.findall(r'<svg\b.*?</svg>',rendered or '',re.S|re.I)
@@ -238,18 +351,21 @@ class Converter:
             # <title>. Prefer that exact representation to the occasionally
             # corrupted [math] serialization of the same field.
             body=re.search(r'<body\b[^>]*>(.*?)</body>',rendered,re.S|re.I)
-            source=body.group(1) if body else rendered
+            source=protect_code(body.group(1) if body else rendered)
             def svg(m):
                 title=re.search(r'<title\b[^>]*>(.*?)</title>',m.group(),re.S|re.I)
                 if not title:raise ValueError(f'SVG lacks source math title at {where}')
-                value=latex_compatible(html.unescape(title.group(1)));context=source[max(0,m.start()-160):m.start()]
+                title_source,local=extract_source_macros(html.unescape(title.group(1)))
+                value=latex_compatible(expand_source_macros(title_source,{**macros,**local}));context=source[max(0,m.start()-160):m.start()]
+                if not value.strip():return ''
                 if value in self.invalid_math:return self.token([self.svg_image(m.group(),where)])
                 span=re.findall(r'<span\b[^>]*>',context)
                 block=bool(span and 'mjpage__block' in span[-1]) or bool(re.search(r'\\begin\{(?:align|equation|gather|multline)',value))
                 self.stats['formulas']+=1
                 return self.token([{'kind':'latex','value':value,'block':block}])
             source=re.sub(r'<svg\b.*?</svg>',svg,source,flags=re.S|re.I)
-        else:source=TEX.sub(lambda m:self.token([self.image(m.group(),where)]),source)
+        else:source=TEX.sub(lambda m:self.token([self.image(m.group(),where)]),protect_code(source))
+        source,_=extract_source_macros(source)
         # Remaining HTML images in source fields are matched only through explicit file IDs.
         def img(m):
             file_id=m.group(1).split('/')[-1]
@@ -260,12 +376,15 @@ class Converter:
         source=IMG.sub(img,source)
         # Protect formulas before stripping source HTML or splitting paragraphs.
         def math(value,block):
-            self.stats['formulas']+=1;value=latex_compatible(html.unescape(value).strip())
+            value=latex_compatible(expand_source_macros(html.unescape(value).strip(),macros))
+            if not value.strip():return ''
+            self.stats['formulas']+=1
             block=block or bool(re.search(r'\\begin\{(?:align|equation|gather|multline)',value))
             return self.token([{'kind':'latex','value':value,'block':block}])
         source=substitute_math(normalize_math_markers(source),math)
         if re.search(r'</?(?:p|div|span|strong|em|br|table|ul|ol|li|sup|sub)\b',source,re.I):
             parser=ToMarkdown();parser.feed(source);source=''.join(parser.out)
+            for block in parser.code_blocks:source=source.replace(block['token'],self.token([{'kind':'code','value':block['value']}]))
             if parser.unknown:self.gaps.append({'kind':'unknown_html','where':where,'tags':sorted(parser.unknown)})
         if 'MISSING_IMAGE:' in source:raise ValueError(f'Unhandled image at {where}')
         tokenized_source=source
@@ -304,9 +423,16 @@ class Converter:
                 if i:rich.append({'kind':'text','value':'\n\n'})
                 rich.extend(b)
             self.add(f'{id}.p0',parent,rich)
+        else:
+            self.gaps.append({'kind':'missing_content','where':where})
+            self.add(f'{id}.missing',parent,'【源资料未提供此处内容】')
     def labeled_field(self,id,parent,label,source,where,rendered=None):
         rich=[{'kind':'text','value':label}]
-        for block in self.field(source,where,rendered):
+        blocks=self.field(source,where,rendered)
+        if not blocks:
+            self.gaps.append({'kind':'missing_content','where':where})
+            rich.append({'kind':'text','value':'\n\n【源资料未提供此处内容】'})
+        for block in blocks:
             rich.append({'kind':'text','value':'\n\n'});rich.extend(block)
         return self.add(id,parent,rich)
 
@@ -314,50 +440,111 @@ class Converter:
         q=step.get('question') or {};sid=f't{tid}.s{step["id"]}'
         root=self.add(sid,parent,f'练习 {q.get("number",step["number"])}')
         if not q.get('text'):
-            self.gaps.append({'kind':'missing_question','where':sid,'questionId':q.get('id')});self.add(sid+'.missing',root,'【源资料未提供该练习的题干与选项】');return
-        self.add_field(sid+'.text',root,q.get('text'),sid+'.text')
-        body=q.get('body') or {}
-        if body.get('segments'):
-            bodytext='';selects=[]
-            for segment in body['segments']:
-                if 'text' in segment:bodytext+=segment['text']
-                elif 'mathJax' in segment:bodytext+=segment['mathJax']
-                elif segment.get('newParagraph'):bodytext+='\n\n'
+            self.gaps.append({'kind':'missing_question','where':sid,'questionId':q.get('id')});self.add(sid+'.missing',root,'【源资料未提供该练习的题干】')
+        else:self.add_field(sid+'.text',root,q['text'],sid+'.text')
+        selects=[];seen_selects={};textboxes=[];represented_sections=set()
+        def selection_key(sel):
+            if sel.get('index') is not None:return ('index',sel.get('sectionIndex'),sel['index'])
+            if sel.get('id') is not None:return ('id',sel['id'])
+            return ('content',json.dumps(sel,sort_keys=True,ensure_ascii=False))
+        def remember_selection(sel):
+            key=selection_key(sel)
+            if key not in seen_selects:seen_selects[key]=len(selects);selects.append(sel)
+            return seen_selects[key]
+        def placeholder(label,text):
+            closing=None
+            for token in re.findall(r'(?<!\\)\${1,2}|\[/?math\]|(?<!\\)\\[\[\]()]',text):
+                if token==closing or (closing=='[/math]' and token=='[math]'):closing=None
+                elif closing is None:closing={'$':'$','$$':'$$','[math]':'[/math]',r'\[':r'\]',r'\(':r'\)'}.get(token)
+            return (r'\boxed{\text{'+label+'}}') if closing else '['+label+']'
+        def segment_text(segments,where):
+            text=''
+            for segment in segments:
+                if 'text' in segment:text+=segment['text']
+                elif 'mathJax' in segment:text+=segment['mathJax']
+                elif segment.get('newParagraph') or segment.get('newline'):text+='\n\n'
                 elif 'select' in segment:
-                    sel=segment['select'];bodytext+=r'\boxed{\text{选择 '+str(sel.get('index',len(selects))+1)+'}}';selects.append(sel)
-                elif 'input' in segment:bodytext+='[填空]'
-                else:self.gaps.append({'kind':'unknown_body_segment','where':sid,'keys':list(segment)})
+                    sel=segment['select'];i=remember_selection(sel)
+                    if sel.get('sectionIndex') is not None:represented_sections.add(sel['sectionIndex'])
+                    label='选择 '+str(sel.get('index',i)+1)
+                    text+=placeholder(label,text)
+                elif 'textbox' in segment or 'input' in segment:
+                    box=segment.get('textbox',segment.get('input'));textboxes.append(box if isinstance(box,dict) else {})
+                    label='填空 '+str(len(textboxes))
+                    text+=placeholder(label,text)
+                else:self.gaps.append({'kind':'unknown_body_segment','where':where,'keys':list(segment)})
+            return text
+        raw_body=q.get('body');free=q.get('freeResponse') or {}
+        body=raw_body if isinstance(raw_body,dict) else {}
+        if isinstance(raw_body,str) and raw_body.strip() and not (isinstance(free,dict) and free.get('segments')):
+            rawroot=self.add(sid+'.body-source',root,'来源中的原始作答字段')
+            self.add(sid+'.body-source.raw',rawroot,[{'kind':'code','value':raw_body}])
+        if body.get('segments'):
+            bodytext=segment_text(body['segments'],sid+'.body')
             self.add_field(sid+'.body',root,bodytext,sid+'.body')
-            for i,sel in enumerate(selects):
-                selroot=self.add(f'{sid}.select{i}',root,f'选择 {sel.get("index",i)+1} 的选项')
-                for j,option in enumerate(sel.get('options') or []):
-                    opt=self.add(f'{sid}.select{i}.o{j}',selroot,f'{j+1}.')
-                    value=f'[math]{option}[/math]' if sel.get('context')=='mathJax' else option
-                    self.add_field(f'{sid}.select{i}.o{j}.text',opt,value,f'{sid}.select{i}.o{j}')
+            # The source body is the displayed first section; completion flags
+            # on later sections are learner state and never become course text.
+            represented_sections.add(0)
+        if isinstance(free,dict) and free.get('segments'):
+            frroot=self.add(sid+'.fr',root,'作答区域：自由作答')
+            self.add_field(sid+'.fr.body',frroot,segment_text(free['segments'],sid+'.fr.body'),sid+'.fr.body')
+        elif q.get('freeResponse'):self.add(sid+'.fr',root,'作答形式：自由作答')
+        elif str(q.get('freeAnswerChoice') or '').strip():
+            self.labeled_field(sid+'.free-answer',root,'来源作答区域',q['freeAnswerChoice'],sid+'.free-answer')
+        # PR/DS exports include all later selectors but only the first section's
+        # prose. Keep every supplied option without inventing the missing prose.
+        for sel in q.get('selects') or []:
+            if isinstance(sel,dict) and sel.get('options'):remember_selection(sel)
+        section_roots={}
+        for i,section in enumerate(q.get('sections') or []):
+            if i not in represented_sections:
+                secroot=self.add(f'{sid}.section{i}',root,f'步骤 {i+1}')
+                section_roots[i]=secroot
+                self.add(f'{sid}.section{i}.missing',secroot,'【源资料未提供此步骤的正文；保留下方可用选项】')
+                self.gaps.append({'kind':'missing_question_section','where':f'{sid}.section{i}.missing'})
+        for i,sel in enumerate(selects):
+            selroot=self.add(f'{sid}.select{i}',section_roots.get(sel.get('sectionIndex'),root),f'选择 {sel.get("index",i)+1} 的选项')
+            for j,option in enumerate(sel.get('options') or []):
+                opt=self.add(f'{sid}.select{i}.o{j}',selroot,f'{j+1}.')
+                value=f'[math]{option}[/math]' if sel.get('context')=='mathJax' else option
+                self.add_field(f'{sid}.select{i}.o{j}.text',opt,value,f'{sid}.select{i}.o{j}')
+        for i,box in enumerate(textboxes):
+            answer=box.get('answer')
+            if answer is not None and str(answer).strip():
+                answerroot=self.add(f'{sid}.fr.answer{i}',root,f'来源中附带的解答：填空 {i+1}')
+                value=str(answer)
+                if box.get('type') in ['number','math','mathJax']:value=f'[math]{value}[/math]'
+                self.add_field(f'{sid}.fr.answer{i}.text',answerroot,value,f'{sid}.fr.answer{i}')
         for i in range(1,6):
             v=q.get(f'choice{i}')
             if v and v.strip():
                 self.labeled_field(f'{sid}.choice{i}',root,f'选项 {i}',v,f'{sid}.choice{i}')
-        if q.get('freeResponse'):
-            self.add(sid+'.fr',root,'作答形式：自由作答')
         # Practice answer=null in exports; never fabricate answers from ordering.
         if q.get('explanation'):self.add_field(sid+'.explanation',self.add(sid+'.answer',root,'来源中附带的解答'),q['explanation'],sid+'.explanation')
 
     def convert(self):
         self.add('course.source',None,self.course['name'])
-        self.add('course.note',None,'前置知识列出本课程中的直接依赖。')
-        self.add('course.question-note',None,'部分练习题缺少题干、配图或标准答案；缺失题干与配图在相应位置标注。')
-        units=set();modules=set()
+        self.add('course.note',None,'前置知识列出所提供图谱中的直接依赖。')
+        self.add('course.question-note',None,'源资料缺失的内容已在对应位置标注；练习解答仅按来源提供。')
+        units=set();modules=set();external_courses=set()
         for tid in self.order:
-            t=self.graph[tid];unit=f'u{t["unit"]["number"]}';module=f'{unit}.m{t["module"]["number"]}'
+            t=self.graph[tid];unit,module=hierarchy_ids(t,self.args.course_id);outside=int(t.get('course',self.course).get('id',self.args.course_id))!=self.args.course_id
+            parent=None
+            if outside:
+                if not external_courses:self.add('external-prerequisites',None,'课程外前置知识',True)
+                cid=str(t['course']['id']);parent=f'external.c{cid}'
+                if cid not in external_courses:self.add(parent,'external-prerequisites',t['course']['name']+'（前置知识）',True);external_courses.add(cid)
             if unit not in units:
-                self.add(unit,None,f'单元 {t["unit"]["number"]}：{t["unit"]["name"]}',True);units.add(unit)
+                self.add(unit,parent,unit_label(t,self.args),True);units.add(unit)
             if module not in modules:
                 self.add(module,unit,f'模块 {t["module"]["number"]}：{t["module"]["name"]}',True);modules.add(module)
             topic=self.add(f't{tid}',module,t['name'],True)
             pre=self.add(f't{tid}.prereqs',topic,'前置知识')
             for p in t['prerequisites']:self.add(f't{tid}.pre{p}',pre,[{'kind':'ref','targetId':f't{p}'}])
             if not t['prerequisites']:self.add(f't{tid}.pre-none',pre,'所提供图谱未列出直接前置 Topic。')
+            if not self.lessons[tid].get('steps'):
+                self.gaps.append({'kind':'missing_lesson','where':f't{tid}'})
+                self.add(f't{tid}.missing-lesson',topic,'【源资料未提供该 Topic 的课文内容】')
             for step in self.lessons[tid].get('steps',[]):
                 kind=step['type'];self.stats[kind]+=1
                 obj=step.get(kind) or {};sid=f't{tid}.s{step["id"]}'
@@ -381,7 +568,7 @@ class Converter:
                 if not getattr(self.args,'plan_only',False):(folder/'drawing.tex').write_text(compatible,encoding='utf-8')
                 d['compatibleSha256']=digest(compatible)
             except ValueError as e:d['sourceError']=str(e)
-        self.plan={'schemaVersion':1,'packageId':f'ma.course{self.args.course_id}.source-export','title':self.args.title,'nodes':self.nodes,'assets':{},'provenance':{'sourceHashes':self.source_hashes,'progressFile':self.progress_name,'courseId':self.args.course_id}}
+        self.plan={'schemaVersion':1,'packageId':f'ma.course{self.args.course_id}.source-export','title':self.args.title,'nodes':self.nodes,'assets':{},'provenance':{'sourceHashes':self.source_hashes,'progressFile':self.progress_name,'courseId':self.args.course_id,'courseTopicIds':sorted(getattr(self,'main_ids',set(self.graph)),key=int),'externalPrerequisiteTopicIds':sorted(set(self.graph)-getattr(self,'main_ids',set(self.graph)),key=int),'externalCourseId':getattr(self.args,'external_course_id',None),'unitLabels':getattr(self.args,'unit_labels','source'),'topicOrderSource':'progress' if getattr(self,'progress',None) is not None else 'source-groups-and-prerequisite-DAG'}}
         dump(self.root/'draft-package.json',self.plan);dump(self.root/'source-coverage.json',self.coverage)
         dump(self.root/'drawings-index.json',{k:{a:b for a,b in d.items() if a!='source'} for k,d in self.drawings.items()})
         dump(self.root/'source-gaps.json',self.gaps);dump(self.root/'conversion-summary.json',{'counts':dict(self.stats),'nodes':len(self.nodes),'uniqueDrawings':len(self.drawings),'gaps':dict(collections.Counter(g['kind'] for g in self.gaps)),'sourceHashes':self.source_hashes})
@@ -465,7 +652,7 @@ def render(args):
 def pack(args):
     root=Path(args.output);plan=json.loads((root/'draft-package.json').read_text(encoding='utf-8'));index=json.loads((root/'drawings-index.json').read_text(encoding='utf-8'));missing=[]
     gaps=json.loads((root/'source-gaps.json').read_text(encoding='utf-8'))
-    assert all(g['kind'] in ['missing_question','missing_graphic'] for g in gaps),'Unresolved conversion loss/format errors'
+    assert all(g['kind'] in ['missing_question','missing_graphic','missing_content','missing_lesson','missing_question_section'] for g in gaps),'Unresolved conversion loss/format errors'
     math=json.loads((root/'math-final-audit.json').read_text())
     assert math['errors']==0,'Native math audit has unresolved failures'
     for key in index:
@@ -481,24 +668,30 @@ def pack(args):
 def audit(args):
     root=Path(args.output);plan=json.loads(Path(args.package).read_text(encoding='utf-8'));nodes={n['id']:n for n in plan['nodes']}
     assert len(nodes)==len(plan['nodes']),'Duplicate package IDs'
-    with zipfile.ZipFile(args.graph) as z:graph=json.loads(z.read(f'course-knowledge-graph/course-{args.course_id}.json'))['topics']
-    unit_ids={f'u{t["unit"]["number"]}' for t in graph.values()}
-    module_ids={f'u{t["unit"]["number"]}.m{t["module"]["number"]}' for t in graph.values()}
-    assert {n['id'] for n in nodes.values() if n['document']}=={'t'+tid for tid in graph}|unit_ids|module_ids,'Course document hierarchy differs from source'
+    graph,main_ids=course_graph(args.graph,args.course_id,getattr(args,'include_external_prerequisites',False),getattr(args,'external_course_id',None))
+    unit_ids={hierarchy_ids(t,args.course_id)[0] for t in graph.values()}
+    module_ids={hierarchy_ids(t,args.course_id)[1] for t in graph.values()}
+    outside={str(t['course']['id']) for tid,t in graph.items() if tid not in main_ids}
+    external_docs=({'external-prerequisites'}|{f'external.c{cid}' for cid in outside}) if outside else set()
+    assert {n['id'] for n in nodes.values() if n['document']}=={'t'+tid for tid in graph}|unit_ids|module_ids|external_docs,'Course document hierarchy differs from source'
+    if outside:
+        assert nodes['external-prerequisites']['parentId'] is None
+        for cid in outside:assert nodes[f'external.c{cid}']['parentId']=='external-prerequisites'
     children=collections.defaultdict(list)
     for n in plan['nodes']:children[n['parentId']].append(n)
     actual=set();steps=collections.Counter()
     for tid,t in graph.items():
         n=nodes['t'+tid]
-        unit=f'u{t["unit"]["number"]}';module=f'{unit}.m{t["module"]["number"]}'
+        unit,module=hierarchy_ids(t,args.course_id)
         assert n['parentId']==module and n['text']==[{'kind':'text','value':t['name']}],f'Topic identity/placement mismatch {tid}'
-        assert nodes[unit]['parentId'] is None and nodes[unit]['text']==[{'kind':'text','value':f'单元 {t["unit"]["number"]}：{t["unit"]["name"]}'}],'Unit mismatch'
+        assert nodes[unit]['parentId']==(None if tid in main_ids else f'external.c{t["course"]["id"]}') and nodes[unit]['text']==[{'kind':'text','value':unit_label(t,args)}],'Unit mismatch'
         assert nodes[module]['parentId']==unit and nodes[module]['text']==[{'kind':'text','value':f'模块 {t["module"]["number"]}：{t["module"]["name"]}'}],'Module mismatch'
         assert f't{tid}.meta' not in nodes,'Redundant unit/module metadata remains under Topic'
         for child in children['t'+tid+'.prereqs']:
             for s in child['text']:
                 if s['kind']=='ref':actual.add((int(tid),int(s['targetId'][1:])))
         lesson=json.loads((root/'source'/f'topic-{tid}.json').read_text(encoding='utf-8'))['lesson']
+        if not lesson.get('steps'):assert nodes[f't{tid}.missing-lesson']['text']==[{'kind':'text','value':'【源资料未提供该 Topic 的课文内容】'}]
         for step in lesson['steps']:
             assert f't{tid}.s{step["id"]}' in nodes,'Source lesson step missing'
             steps[step['type']]+=1
@@ -510,12 +703,20 @@ def audit(args):
     assert set(images)==set(plan['assets']),'Image set differs from package assets'
     for key,a in plan['assets'].items():assert digest(base64.b64decode(a['base64']))==a['sha256'],'Asset digest mismatch'
     gaps=json.loads((root/'source-gaps.json').read_text(encoding='utf-8'))
-    assert all(g['kind'] in ['missing_question','missing_graphic'] for g in gaps),'Unresolved conversion errors'
-    report={'status':'PASSED','topics':len(graph),'units':len(unit_ids),'modules':len(module_ids),'edges':len(actual),'steps':dict(steps),'nodes':len(nodes),'nativeFormulas':math['count'],'formulaErrors':0,'uniqueImages':len(images),'imageOccurrences':sum(images.values()),'sourceGaps':dict(collections.Counter(g['kind'] for g in gaps))}
+    assert all(g['kind'] in ['missing_question','missing_graphic','missing_content','missing_lesson','missing_question_section'] for g in gaps),'Unresolved conversion errors'
+    for gap in gaps:
+        if gap['kind']=='missing_content':
+            loc=gap['where'];n=nodes.get(loc) or nodes.get(loc+'.missing')
+            assert n and any('【源资料未提供此处内容】' in s.get('value','') for s in n['text']),'Missing content placeholder absent'
+        elif gap['kind']=='missing_question_section':
+            marker=nodes.get(gap['where'])
+            assert marker and any('【源资料未提供此步骤的正文' in s.get('value','') for s in marker['text']),'Missing section-body placeholder absent'
+    report={'status':'PASSED','topics':len(graph),'courseTopics':len(main_ids),'externalPrerequisiteTopics':len(graph)-len(main_ids),'units':len(unit_ids),'modules':len(module_ids),'edges':len(actual),'steps':dict(steps),'nodes':len(nodes),'nativeFormulas':math['count'],'formulaErrors':0,'uniqueImages':len(images),'imageOccurrences':sum(images.values()),'sourceGaps':dict(collections.Counter(g['kind'] for g in gaps))}
     dump(root/'package-audit.json',report);print(json.dumps(report),flush=True)
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('stage',choices=['convert','render','pack','audit']);p.add_argument('--graph');p.add_argument('--progress');p.add_argument('--topics');p.add_argument('--course-id',type=int,default=154);p.add_argument('--title',default='数学物理方法一（MA）');p.add_argument('--output',required=True);p.add_argument('--tectonic');p.add_argument('--pdftoppm');p.add_argument('--workers',type=int,default=2);p.add_argument('--limit',type=int);p.add_argument('--retry-failed',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--math-audit');p.add_argument('--package')
+    p.add_argument('--allow-missing-progress',action='store_true');p.add_argument('--include-external-prerequisites',action='store_true');p.add_argument('--external-course-id',type=int);p.add_argument('--unit-labels',choices=['source','numeric'],default='source')
     a=p.parse_args()
     if a.stage=='convert':c=Converter(a);c.load();c.convert()
     elif a.stage=='render':render(a)

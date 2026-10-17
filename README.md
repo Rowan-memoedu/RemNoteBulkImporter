@@ -87,6 +87,8 @@ The current layout uses `node scripts/layout-annotations.mjs <immutable-package>
 
 Version 0.1.9 creates added plain-text nodes in batches of 16 with separate durable mapping and text checkpoints. Committed creation batches recover by exact sentinel and parent; committed text batches accept only identical text. Reordering compares parent child lists even when no nodes change parent, and moves only children whose current positions differ. The final whole-import audit remains mandatory.
 
+Version 0.1.10 registers each newly uploaded native image with the readback projection immediately. A cold import can encounter its first image before later assets have been uploaded; a one-time cache scan must not permanently exclude those later assets. Registration retains the original parser object and still requires byte verification, exact source membership and unchanged geometry rules. `scripts/fresh-images-canary.mjs <artifact-package.json>` creates two fresh images separated by a mutation batch plus literal multiline code for a real SDK regression check.
+
 ## Validation
 
 `npm test`, `npm run typecheck`, and `node node_modules/@remnote/plugin-sdk/scripts/index.js validate`.
@@ -97,6 +99,8 @@ The 0.1.9 suite has 54 passing tests, including batched structure creation, part
 
 ## Math Academy consumer
 
+`npm run course -- prepare ...` now runs the complete local conversion, math audit, source-SVG fallback, diagram rendering, native prerequisite packaging, annotation layout and two independent source checks. Use explicit `import` with the expected KB ID to submit the prepared package through the existing MCP engine and wait for full readback. [Course workflow commands and recovery](consumers/course-workflow.md) document the arguments, stage fingerprints, completed-job adoption and duplicate prevention. Parallel preparation uses separate artifact directories; RemNote imports share one serial queue.
+
 `consumers/math_academy.py` converts the supplied course graph, progress snapshots and lesson JSON into the generic package. It reads the provided answer archive only to recover matching question/graphic source; learner names, history and progress values are not imported. Source exports, graphics and evidence remain under `D:/Artifacts/RemNoteBulkImporter`, never in Git.
 
 - `convert`: validates course identities across graph and progress, creates nested Unit/Module/Topic documents in source order, creates package-local prerequisite references, and retains original lesson JSON separately. Unit/module descriptions are represented by document hierarchy rather than duplicate metadata under each Topic.
@@ -106,6 +110,10 @@ The 0.1.9 suite has 54 passing tests, including batched structure creation, part
 - `render`: uses existing Tectonic with `--untrusted`, hash-addressed work directories and D: caches; rasterizes PDFs with Poppler/Pillow. Independent panels can be shipped separately when TeX runs out of page memory. A faceted-coloring fallback retains sampled coordinates, mesh, labels and equations when interpolated shading exceeds engine memory. Every such transformation is recorded beside the source image, and successful renders are reused.
 - `pack`: requires all referenced drawing outputs, embeds image bytes and hashes, and writes a generic package. `consumers/audit-math.mjs` validates every native expression using KaTeX; its failure report can feed original-SVG fallback with `--math-audit`.
 - `audit`: independently compares the finished package against source Topic identities, prerequisite edges and every lesson step; verifies that math audit counts and image digests still match the package. Packing rejects unhandled conversion loss and missing drawing receipts.
+
+Absent progress snapshots require explicit `--allow-missing-progress`; ordering then uses source Unit/Module groups and the prerequisite DAG, without manufacturing learning state. External prerequisite closure requires an explicitly selected source course, preventing silent selection between different course-specific graphs. `--unit-labels numeric` retains the main course's original unit numbers when its names are unreliable; raw graph metadata remains in the local source snapshot. Empty lessons and required content fields keep visible missing-source markers.
+
+Question conversion supports structured free-response textboxes and their supplied answers, all selectors across PR/DS sections, and explicit placeholders for unavailable later section prose. It never derives answers from choice order. Legacy string response data does not override structured responses; when it is the only representation, its exact value is retained as source code. Field-local zero-argument math definitions expand from their actual supplied bodies, and HTML code is protected before math and paragraph parsing. `audit-course-source.py` independently rereads the original ZIPs to check these fields and reject missing or wrong answers/options.
 
 The converter uses the bundled desktop Python runtime (Pillow), existing Tectonic and Poppler paths. No full TeX Live installation is required. Run its independent fixtures with the bundled Python:
 

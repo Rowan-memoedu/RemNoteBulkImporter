@@ -1,6 +1,6 @@
 {
   "name": "remnote-bulk-importer",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,7 +12,8 @@
     "canary": "node scripts/canary.mjs",
     "test": "node --test test/*.test.mjs",
     "start": "node src/server.mjs",
-    "cli": "node src/cli.mjs"
+    "cli": "node src/cli.mjs",
+    "course": "node consumers/course-workflow.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
