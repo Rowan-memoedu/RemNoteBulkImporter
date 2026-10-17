@@ -58,6 +58,15 @@ test('pause leaves checkpoint and resumes; no transient complete claim',async()=
   assert.equal(result.status,'paused');assert.equal(a.rems.size,2);
   assert.equal((await runImport(a,p,r,options)).status,'complete');assert.equal(a.rems.size,5);
 });
+
+test('partial creation without host rollback recovers exact sentinels without duplicates',async()=>{
+  const a=new MockAdapter(),p=fixture(),r=await request(p);
+  a.transaction=async fn=>await fn();a.failCreate=2;
+  await assert.rejects(runImport(a,p,r,options),/SDK failure/);assert.equal(a.rems.size,1);
+  const originalRoot=[...a.rems.keys()][0];a.failCreate=0;
+  const result=await runImport(a,p,r,options);
+  assert.equal(result.rootRemId,originalRoot);assert.equal(a.rems.size,5);assert.equal(result.verified,5);
+});
 test('reconnecting after text commit but checkpoint failure repeats only owned, identical text',async()=>{
   const a=new MockAdapter(),p=fixture(),r=await request(p);let fail=false;
   const original=a.save.bind(a);a.save=async(h,cp)=>{if(!fail&&cp.written===2){fail=true;throw new Error('text checkpoint failure');}return original(h,cp);};

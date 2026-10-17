@@ -83,7 +83,7 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     }
     await adapter.transaction(async()=>{
       for(const {node:n,rich,canonical} of prepared) {
-        adapter.context?.({phase:'write',nodeId:n.id});
+        adapter.context?.({phase:'write',nodeId:n.id,remId:cp.mapping[n.id]});
         const rem=await adapter.find(cp.mapping[n.id]);assert(rem,`Missing mapped node ${n.id}`);
         const actual=await adapter.canonical(rem.text ?? []),initial=await adapter.canonical([sentinel(n.id)]);
         assert(actual===initial || actual===canonical,`Imported text was edited (${n.id}); refusing overwrite`);

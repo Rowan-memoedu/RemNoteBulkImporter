@@ -5,8 +5,8 @@ const [command,...args]=process.argv.slice(2);
 const client=new Client({name:'remnote-bulk-import-cli',version:VERSION});
 await client.connect(new StreamableHTTPClientTransport(new URL('http://127.0.0.1:43106/mcp')));
 try{
-  const commands={status:['bulk_import_status',{}],prepare:['bulk_import_prepare',{packagePath:args[0]}],start:['bulk_import_start',{jobId:args[0],...(args[1]?{parentRemId:args[1]}:{})}],job:['bulk_import_job',{jobId:args[0]}],pause:['bulk_import_pause',{jobId:args[0]}]};
-  if(!commands[command])throw new Error('Usage: node src/cli.mjs status | prepare <absolute-package.json> | start <jobId> [parentRemId] | job <jobId> | pause <jobId>');
+  const commands={status:['bulk_import_status',{}],prepare:['bulk_import_prepare',{packagePath:args[0]}],start:['bulk_import_start',{jobId:args[0],...(args[1]?{parentRemId:args[1]}:{})}],job:['bulk_import_job',{jobId:args[0]}],pause:['bulk_import_pause',{jobId:args[0]}],restructure:['bulk_import_restructure',{baseJobId:args[0],packagePath:args[1],archiveParentRemId:args[2]}]};
+  if(!commands[command])throw new Error('Usage: node src/cli.mjs status | prepare <absolute-package.json> | start <jobId> [parentRemId] | job <jobId> | pause <jobId> | restructure <baseJobId> <packagePath> <recoveryParentRemId>');
   const [name,input]=commands[command],result=await client.callTool({name,arguments:input});
   console.log(JSON.stringify(result.structuredContent ?? result.content,null,2));
   if(result.isError)process.exitCode=1;

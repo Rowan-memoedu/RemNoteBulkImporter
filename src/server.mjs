@@ -9,10 +9,12 @@ import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/st
 import {z} from 'zod';
 import {inspectPackage} from './package.mjs';
 import {VERSION} from './version.mjs';
+import {managedMediaRoots,verifyManagedImage} from './media.mjs';
+import {planStructureChange} from './restructure.mjs';
 
 export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteBulkImporter/plugin',importRoot='D:/Artifacts/RemNoteBulkImporter/packages',stateRoot='D:/AppData/RemNoteBulkImporter'}={}) {
   for(const dir of [importRoot,stateRoot])await mkdir(dir,{recursive:true});
-  let bridge=null,identity=null,active=null;
+  let bridge=null,identity=null,active=null,activeAssets=null;
   const pending=new Map(),jobs=new Map();
   const atomic=async(file,obj)=>{const temp=`${file}.${randomUUID()}.tmp`;await writeFile(temp,JSON.stringify(obj));await rename(temp,file);};
   for(const name of await readdir(stateRoot))if(/^[a-f0-9]{64}\.job\.json$/.test(name)){
@@ -21,7 +23,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
   }
   const jobFile=id=>path.join(stateRoot,`${id}.job.json`);
   const persist=job=>atomic(jobFile(job.jobId),job);
-  const summary=job=>{const {planPath,result,...rest}=job;return {...rest,...(result?{result:{status:result.status,rootRemId:result.rootRemId,verified:result.verified,nodes:result.nodes,documents:result.documents,references:result.references,assets:result.assets}}:{})};};
+  const summary=job=>{const {planPath,result,mediaAudit,...rest}=job;return {...rest,verifiedManagedAssets:Object.keys(mediaAudit??{}).length,...(result?{result:{status:result.status,rootRemId:result.rootRemId,verified:result.verified,nodes:result.nodes,documents:result.documents,references:result.references,assets:result.assets}}:{})};};
   const rpc=(type,data={})=>new Promise((resolve,reject)=>{
     if(!bridge || bridge.readyState!==WebSocket.OPEN){reject(new Error('Bulk Importer plugin is not connected'));return;}
     const id=randomUUID(),timer=setTimeout(()=>{pending.delete(id);reject(new Error('Plugin reply timed out; inspect job before retrying'));},20000);
@@ -48,14 +50,30 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     if(live.diagnostics?.restartRequired)throw new Error('Reload plugin after its SDK timeout before resuming');
     if(job.kbId && (job.kbId!==live.kbId || job.parentRemId!==parentRemId))throw new Error('Cannot resume in a different knowledge base or destination');
     const plan=JSON.parse(await readFile(job.planPath,'utf8'));if((await inspectPackage(plan)).hash!==jobId)throw new Error('Prepared package changed');
-    job.kbId=live.kbId;job.parentRemId=parentRemId;job.status='starting';job.error=null;active=jobId;await persist(job);
+    let revision={};
+    if(job.restructureFrom){
+      const base=jobs.get(job.restructureFrom);if(base?.status!=='complete')throw new Error('Base import must be complete before structure revision');
+      const basePlan=JSON.parse(await readFile(base.planPath,'utf8'));planStructureChange(basePlan,plan);
+      if(base.kbId!==live.kbId||base.parentRemId!==parentRemId)throw new Error('Structure base destination differs');
+      revision={baseHash:base.jobId,basePlan,archiveParentRemId:job.archiveParentRemId};
+    }
+    job.kbId=live.kbId;job.parentRemId=parentRemId;job.status='starting';job.error=null;active=jobId;activeAssets=plan.assets??{};await persist(job);
     try {
-      await rpc('import',{jobId,plan,request:{packageHash:jobId,kbId:live.kbId,parentRemId}});
+      await rpc('import',{jobId,plan,request:{packageHash:jobId,kbId:live.kbId,parentRemId,...revision}});
       if(job.status==='starting')job.status='running';await persist(job);
     } catch(e){job.status='interrupted';job.error=String(e);active=null;await persist(job);throw e;}
     return summary(job);
   };
   const pause=async({jobId})=>{if(active!==jobId)throw new Error('Job is not active');bridge.send(JSON.stringify({type:'pause'}));return {jobId,status:'pause_requested'};};
+  const restructure=async({baseJobId,packagePath,archiveParentRemId})=>{
+    const base=jobs.get(baseJobId);if(base?.status!=='complete')throw new Error('Base import must complete full readback first');
+    const prepared=await prepare({packagePath}),job=jobs.get(prepared.jobId);
+    if(job.jobId===baseJobId)throw new Error('Structure revision must have a distinct package');
+    if(job.restructureFrom&&(job.restructureFrom!==baseJobId||job.archiveParentRemId!==archiveParentRemId))throw new Error('Structure revision checkpoint differs');
+    planStructureChange(JSON.parse(await readFile(base.planPath,'utf8')),JSON.parse(await readFile(job.planPath,'utf8')));
+    job.restructureFrom=baseJobId;job.archiveParentRemId=archiveParentRemId;await persist(job);
+    return start({jobId:job.jobId,parentRemId:base.parentRemId});
+  };
   const toolResult=data=>({content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data});
   const makeMcp=()=>{
     const mcp=new McpServer({name:'remnote-bulk-importer',version:VERSION});
@@ -67,6 +85,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     register('bulk_import_start','Submit a prepared package as one resumable import job. Creates only a new subtree; no deletion or existing-note replacement.',{jobId:z.string().regex(/^[a-f0-9]{64}$/),parentRemId:z.string().min(1).nullable().optional()},start);
     register('bulk_import_job','Read compact progress and final audit counts. Completion requires exact full readback.',{jobId:z.string().regex(/^[a-f0-9]{64}$/)},async({jobId})=>{const job=jobs.get(jobId);if(!job)throw new Error('Unknown job');return summary(job);});
     register('bulk_import_pause','Pause at the next safe batch boundary; resume with bulk_import_start.',{jobId:z.string()},pause);
+    register('bulk_import_restructure','Reparent a completed owned import using an immutable structure-only package; preserve all retained Rem IDs, text, assets and references. Archive obsolete plain leaf metadata beneath an explicit recovery parent.',{baseJobId:z.string().regex(/^[a-f0-9]{64}$/),packagePath:z.string(),archiveParentRemId:z.string().min(1)},restructure);
     return mcp;
   };
   const server=http.createServer(async(req,res)=>{
@@ -107,11 +126,19 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     socket.on('message',raw=>{
       queued=queued.then(async()=>{
         const m=JSON.parse(raw.toString());
-        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0','0.1.1',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
+        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0','0.1.1','0.1.2','0.1.3','0.1.4',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
         if(m.type==='reply'){
           const entry=pending.get(m.id);if(entry){clearTimeout(entry.timer);pending.delete(m.id);m.error?entry.reject(new Error(m.error)):entry.resolve(m.result);}return;
         }
         const job=jobs.get(m.jobId);if(!job||active!==m.jobId)return;
+        if(m.type==='media-verify'){
+          try{
+            const asset=activeAssets?.[m.assetId];if(!asset)throw new Error('Image is outside active package');
+            const result=await verifyManagedImage(m.url,asset,await managedMediaRoots());
+            job.mediaAudit??={};job.mediaAudit[m.assetId]={url:m.url,...result};await persist(job);
+            socket.send(JSON.stringify({type:'media-reply',id:m.id,result}));
+          }catch(error){socket.send(JSON.stringify({type:'media-reply',id:m.id,error:error.message}));}return;
+        }
         if(m.type==='progress'){job.progress={phase:m.phase,created:m.created,written:m.written,verified:m.verified,total:m.total,rootRemId:m.rootRemId,...(m.checked!==undefined?{checked:m.checked,resumeTotal:m.resumeTotal}:{})};}
         else if(m.type==='result'){
           // Only an engine result after full audit can be complete.

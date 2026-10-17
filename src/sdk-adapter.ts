@@ -1,8 +1,10 @@
 import type { ReactRNPlugin, RichTextInterface } from '@remnote/plugin-sdk';
 import { stableJSON } from './package.mjs';
 import { checkpointStore } from './checkpoint.mjs';
+import { sdkTransaction } from './sdk-transaction.mjs';
+import { nativeImage } from './native-image.mjs';
 
-export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any) {
+export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, verifyMedia: any) {
   const call=monitor.call;
   const checkpoints=checkpointStore({
     getLocal:(key:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(key)),
@@ -26,7 +28,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any) {
       await call('rem.setEnablePractice',()=>rem.setEnablePractice(false));
       return rem;
     },
-    transaction: <T>(fn:()=>Promise<T>) => call('app.transaction',()=>plugin.app.transaction(fn),180000),
+    transaction: <T>(fn:()=>Promise<T>) => call('app.transaction',()=>sdkTransaction((wrapped:any)=>plugin.app.transaction(wrapped),fn),180000),
     compile: async (segments: any[], mapping: Record<string,string>, assets: Record<string,any>) => {
       const result: RichTextInterface = [];
       for(const s of segments) {
@@ -42,7 +44,12 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any) {
           }
           case 'image': {
             const a=assets[s.assetId];
-            part=await call('richText.image',()=>plugin.richText.image(`data:${a.mime};base64,${a.base64}`).value());break;
+            part=[await nativeImage(s.assetId,a,{
+              get:(hash:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(`rbi-image:${kbId}:${hash}`)),
+              set:(hash:string,value:any)=>call('storage.setLocal',()=>plugin.storage.setLocal(`rbi-image:${kbId}:${hash}`,value)),
+              parse:(markdown:string)=>call('richText.uploadImage',()=>plugin.richText.parseFromMarkdown(markdown)),
+              verify:(assetId:string,url:string)=>call('media.verify',()=>verifyMedia(assetId,url)),
+            })];break;
           }
           default: throw new Error('Unsupported RichText segment');
         }
@@ -52,6 +59,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any) {
     },
     canonical: async (rich: RichTextInterface) => stableJSON(await call('richText.normalize',()=>plugin.richText.normalize(rich))),
     setText: (rem:any,rich:RichTextInterface) => call('rem.setText',()=>rem.setText(rich)),
+    move: (rem:any,parent:string,index:number) => call('rem.setParent',()=>rem.setParent(parent,index)),
     disablePractice: (rem:any) => call('rem.setEnablePractice',()=>rem.setEnablePractice(false)),
     practiceEnabled: (rem:any) => call('rem.getEnablePractice',()=>rem.getEnablePractice()),
     isDocument: (rem:any) => call('rem.isDocument',()=>rem.isDocument()),

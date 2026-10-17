@@ -35,11 +35,12 @@ node src/cli.mjs prepare D:/Artifacts/RemNoteBulkImporter/packages/example.json
 node src/cli.mjs start <jobId> [destinationParentRemId]
 node src/cli.mjs job <jobId>
 node src/cli.mjs pause <jobId>
+node src/cli.mjs restructure <completedBaseJobId> <structurePackagePath> <recoveryParentRemId>
 ```
 
 Omit destinationParentRemId to create a new top-level document. `prepare` is read-only with respect to RemNote. `start` submits the whole immutable package once; the server returns immediately and the plugin runs bounded SDK batches. Resume a paused/interrupted/failed task with the same `start` command. Do not change knowledge base or destination during a task.
 
-The MCP endpoint is `http://127.0.0.1:43106/mcp`. Tool names: `bulk_import_status`, `bulk_import_prepare`, `bulk_import_start`, `bulk_import_job`, `bulk_import_pause`. The CLI is a normal MCP client, not a second import implementation. Job receipts and immutable packages live in `D:/AppData/RemNoteBulkImporter`. Browser origins cannot invoke MCP; the WebSocket accepts only the local plugin and official RemNote origins. No server listens on the LAN.
+The MCP endpoint is `http://127.0.0.1:43106/mcp`. Tool names: `bulk_import_status`, `bulk_import_prepare`, `bulk_import_start`, `bulk_import_job`, `bulk_import_pause`, `bulk_import_restructure`. The CLI is a normal MCP client, not a second import implementation. Job receipts and immutable packages live in `D:/AppData/RemNoteBulkImporter`. Browser origins cannot invoke MCP; the WebSocket accepts only the local plugin and official RemNote origins. No server listens on the LAN.
 
 ## Package v1
 
@@ -68,7 +69,11 @@ Version 0.1.1 validates existing mapped IDs with SDK `findMany` in batches of 12
 
 Version 0.1.2 exposes current SDK call, elapsed time and import-node context through status. Individual SDK calls have a 60-second limit; a whole small transaction has a 180-second limit. A timeout fences further import calls in that plugin instance until reload, because a pending mutation might still complete. It never retries a timed-out mutation automatically. Completion still requires the unchanged full readback audit.
 
-The installed plugin has passed real RemNote canaries for document flags, forward references, multiline text, native math and formatting, plus an embedded 116,856-byte PNG with exact RichText readback. Images use embedded data URLs; the old bridge's managed-local-media retrieval does not cover this representation. These tests do not establish cross-device/cloud image synchronization. Imported-source formatting and mathematical rendering require a separate source-conversion audit.
+The earlier plugin passed real RemNote canaries for document flags, references, multiline text, math, formatting and an embedded 116,856-byte PNG. The full course then exposed RemNote's per-Rem synchronization-size limit when several embedded images shared one Rem. From 0.1.4, the official Markdown image parser uploads each asset and returns a managed `%LOCAL_FILE%` image object. The complete native object is retained and cached by knowledge base and source SHA-256. The independent local MCP service hashes the actual managed file in RemNote's existing media directories and rejects mismatched bytes or paths outside those directories. No old bridge dependency is added. Cross-device synchronization requires separate verification.
+
+SDK transaction callback errors are captured, acknowledged by the host, and rethrown outside the callback. This prevents a callback rejection from concealing the real SDK error. Partial committed writes remain recoverable; the adapter does not assume host rollback.
+
+`restructure` accepts a completed owned import and a new immutable package with identical retained text, reference targets and assets. It verifies the entire base, adds plain-title documents, reparents existing Rem IDs, and moves obsolete unreferenced plain leaf metadata beneath an explicit recovery parent outside the course. It never deletes those nodes. Checkpoints recover committed moves, and the final result requires the same full-node readback as an ordinary import. Current MA hierarchy is Course → Unit documents → Module documents → Topic documents.
 
 ## Validation
 
@@ -80,7 +85,7 @@ The engine tests cover forward and cyclic content references, hierarchy/order, p
 
 `consumers/math_academy.py` converts the supplied course graph, progress snapshots and lesson JSON into the generic package. It reads the provided answer archive only to recover matching question/graphic source; learner names, history and progress values are not imported. Source exports, graphics and evidence remain under `D:/Artifacts/RemNoteBulkImporter`, never in Git.
 
-- `convert`: validates course identities across graph and progress, orders every Topic by the exported course/module/topic numbers, creates package-local prerequisite references, and retains original lesson JSON separately.
+- `convert`: validates course identities across graph and progress, creates nested Unit/Module/Topic documents in source order, creates package-local prerequisite references, and retains original lesson JSON separately. Unit/module descriptions are represented by document hierarchy rather than duplicate metadata under each Topic.
 - MathJax-rendered HTML with original LaTeX in SVG titles is preferred where available, because some `[math]` strings in the source export are damaged. Unsupported/legacy syntax is mechanically converted without changing mathematical payloads. The brace-aware delimiter scanner preserves nested math inside text macros. Original notation can fall back to its supplied SVG when native KaTeX cannot represent it.
 - Unpublished HTML comments, styles and scripts remain in source exports and are excluded from readable lesson text. Missing question bodies/images get explicit local placeholders; standard answers are never inferred from option order.
 - Paragraph breaks are preserved inside native multiline Rems; titles, examples, question/answer fields, options and prerequisite branches keep their logical hierarchy. Human-facing course text contains no operational IDs, paths, hashes or audit receipts.

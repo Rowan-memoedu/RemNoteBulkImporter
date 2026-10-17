@@ -347,9 +347,14 @@ class Converter:
         self.add('course.source',None,self.course['name'])
         self.add('course.note',None,'前置知识列出本课程中的直接依赖。')
         self.add('course.question-note',None,'部分练习题缺少题干、配图或标准答案；缺失题干与配图在相应位置标注。')
+        units=set();modules=set()
         for tid in self.order:
-            t=self.graph[tid];topic=self.add(f't{tid}',None,t['name'],True)
-            self.add(f't{tid}.meta',topic,f'单元 {t["unit"]["number"]}：{t["unit"]["name"]}｜模块 {t["module"]["number"]}：{t["module"]["name"]}')
+            t=self.graph[tid];unit=f'u{t["unit"]["number"]}';module=f'{unit}.m{t["module"]["number"]}'
+            if unit not in units:
+                self.add(unit,None,f'单元 {t["unit"]["number"]}：{t["unit"]["name"]}',True);units.add(unit)
+            if module not in modules:
+                self.add(module,unit,f'模块 {t["module"]["number"]}：{t["module"]["name"]}',True);modules.add(module)
+            topic=self.add(f't{tid}',module,t['name'],True)
             pre=self.add(f't{tid}.prereqs',topic,'前置知识')
             for p in t['prerequisites']:self.add(f't{tid}.pre{p}',pre,[{'kind':'ref','targetId':f't{p}'}])
             if not t['prerequisites']:self.add(f't{tid}.pre-none',pre,'所提供图谱未列出直接前置 Topic。')
@@ -477,13 +482,19 @@ def audit(args):
     root=Path(args.output);plan=json.loads(Path(args.package).read_text(encoding='utf-8'));nodes={n['id']:n for n in plan['nodes']}
     assert len(nodes)==len(plan['nodes']),'Duplicate package IDs'
     with zipfile.ZipFile(args.graph) as z:graph=json.loads(z.read(f'course-knowledge-graph/course-{args.course_id}.json'))['topics']
-    assert {n['id'] for n in nodes.values() if n['document']}=={'t'+tid for tid in graph},'Topic document set differs from source'
+    unit_ids={f'u{t["unit"]["number"]}' for t in graph.values()}
+    module_ids={f'u{t["unit"]["number"]}.m{t["module"]["number"]}' for t in graph.values()}
+    assert {n['id'] for n in nodes.values() if n['document']}=={'t'+tid for tid in graph}|unit_ids|module_ids,'Course document hierarchy differs from source'
     children=collections.defaultdict(list)
     for n in plan['nodes']:children[n['parentId']].append(n)
     actual=set();steps=collections.Counter()
     for tid,t in graph.items():
         n=nodes['t'+tid]
-        assert n['parentId'] is None and n['text']==[{'kind':'text','value':t['name']}],f'Topic identity/placement mismatch {tid}'
+        unit=f'u{t["unit"]["number"]}';module=f'{unit}.m{t["module"]["number"]}'
+        assert n['parentId']==module and n['text']==[{'kind':'text','value':t['name']}],f'Topic identity/placement mismatch {tid}'
+        assert nodes[unit]['parentId'] is None and nodes[unit]['text']==[{'kind':'text','value':f'单元 {t["unit"]["number"]}：{t["unit"]["name"]}'}],'Unit mismatch'
+        assert nodes[module]['parentId']==unit and nodes[module]['text']==[{'kind':'text','value':f'模块 {t["module"]["number"]}：{t["module"]["name"]}'}],'Module mismatch'
+        assert f't{tid}.meta' not in nodes,'Redundant unit/module metadata remains under Topic'
         for child in children['t'+tid+'.prereqs']:
             for s in child['text']:
                 if s['kind']=='ref':actual.add((int(tid),int(s['targetId'][1:])))
@@ -500,7 +511,7 @@ def audit(args):
     for key,a in plan['assets'].items():assert digest(base64.b64decode(a['base64']))==a['sha256'],'Asset digest mismatch'
     gaps=json.loads((root/'source-gaps.json').read_text(encoding='utf-8'))
     assert all(g['kind'] in ['missing_question','missing_graphic'] for g in gaps),'Unresolved conversion errors'
-    report={'status':'PASSED','topics':len(graph),'edges':len(actual),'steps':dict(steps),'nodes':len(nodes),'nativeFormulas':math['count'],'formulaErrors':0,'uniqueImages':len(images),'imageOccurrences':sum(images.values()),'sourceGaps':dict(collections.Counter(g['kind'] for g in gaps))}
+    report={'status':'PASSED','topics':len(graph),'units':len(unit_ids),'modules':len(module_ids),'edges':len(actual),'steps':dict(steps),'nodes':len(nodes),'nativeFormulas':math['count'],'formulaErrors':0,'uniqueImages':len(images),'imageOccurrences':sum(images.values()),'sourceGaps':dict(collections.Counter(g['kind'] for g in gaps))}
     dump(root/'package-audit.json',report);print(json.dumps(report),flush=True)
 
 def main():

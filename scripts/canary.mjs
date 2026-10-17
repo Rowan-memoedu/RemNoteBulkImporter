@@ -1,4 +1,4 @@
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {sha256,inspectPackage} from '../src/package.mjs';
 const base64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
@@ -11,4 +11,13 @@ const p={schemaVersion:1,packageId:process.argv[2]??'rbi.acceptance.20261017',ti
   {id:'format',parentId:'topic-b',document:false,text:[{kind:'markdown',value:'**原生粗体**与 *斜体*'}]},
   {id:'image',parentId:'topic-b',document:false,text:[{kind:'image',assetId:'pixel'}]},
 ]};
+// Optional source-neutral stress fixture: use the largest supplied asset and
+// repeat it inline five times, exceeding ordinary per-Rem embedded-byte limits.
+if(process.argv[3]){
+  const source=JSON.parse(await readFile(process.argv[3],'utf8'));
+  p.assets.pixel=Object.values(source.assets).sort((a,b)=>b.base64.length-a.base64.length)[0];
+  const parts=[];
+  for(let i=0;i<5;i++)parts.push({kind:'text',value:`\n\n独立配图 ${i+1}：`},{kind:'latex',value:`u_${i+1}^2+v_${i+1}^2=1`,block:false},{kind:'image',assetId:'pixel'});
+  p.nodes.push({id:'multi-image',parentId:'topic-a',document:false,text:parts});
+}
 const root='D:/Artifacts/RemNoteBulkImporter/packages';await mkdir(root,{recursive:true});await writeFile(`${root}/canary.json`,JSON.stringify(p,null,2));console.log(await inspectPackage(p));

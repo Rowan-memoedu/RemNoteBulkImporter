@@ -3,6 +3,7 @@ import { runImport } from './engine.mjs';
 import { sdkAdapter } from './sdk-adapter';
 import { VERSION } from './version.mjs';
 import { sdkMonitor } from './sdk-monitor.mjs';
+import { restructureImport } from './restructure.mjs';
 
 let ws: WebSocket|undefined;
 let timer: ReturnType<typeof setTimeout>|undefined;
@@ -13,6 +14,7 @@ const send = (msg:unknown) => { if(ws?.readyState===WebSocket.OPEN) ws.send(JSON
 async function activate(plugin:ReactRNPlugin) {
   stopped=false;
   const monitor=sdkMonitor();
+  const mediaPending=new Map<string,{resolve:(value:any)=>void,reject:(error:any)=>void}>();
   await plugin.app.registerCommand({id:'bulk-import-status',name:'批量导入：查看连接状态',quickCode:'rbi',action:async()=>{
     await plugin.app.toast(busy?'批量导入正在运行':ws?.readyState===WebSocket.OPEN?'批量导入已连接本地服务':'批量导入未连接本地服务');
   }});
@@ -23,6 +25,9 @@ async function activate(plugin:ReactRNPlugin) {
     ws.onmessage=async(event)=>{
       let m:any;
       try { m=JSON.parse(event.data); } catch { return; }
+      if(m.type==='media-reply'){
+        const entry=mediaPending.get(m.id);if(entry){mediaPending.delete(m.id);m.error?entry.reject(new Error(m.error)):entry.resolve(m.result);}return;
+      }
       if(m.type==='pause'){pause=true;return;}
       if(m.type==='status'){
         try {const kb=await plugin.kb.getCurrentKnowledgeBaseData();send({type:'reply',id:m.id,result:{kbId:kb._id,kbName:kb.name,busy,diagnostics:monitor.snapshot()}});}
@@ -33,7 +38,11 @@ async function activate(plugin:ReactRNPlugin) {
       if(busy){send({type:'reply',id:m.id,error:'An import is already running in this plugin'});return;}
       busy=true;pause=false;send({type:'reply',id:m.id,result:{accepted:true}});
       try {
-        const result=await runImport(sdkAdapter(plugin,m.request.kbId,monitor),m.plan,m.request,{
+        const verifyMedia=(assetId:string,url:string)=>new Promise((resolve,reject)=>{
+          const id=crypto.randomUUID();mediaPending.set(id,{resolve,reject});send({type:'media-verify',id,jobId:m.jobId,assetId,url});
+        });
+        const execute=m.request.baseHash?restructureImport:runImport;
+        const result=await execute(sdkAdapter(plugin,m.request.kbId,monitor,verifyMedia),m.plan,m.request,{
           progress:(p:any)=>send({type:'progress',jobId:m.jobId,...p}),
           shouldPause:()=>pause||stopped||ws?.readyState!==WebSocket.OPEN,
           batchSize:16,yieldMs:30,
@@ -44,7 +53,7 @@ async function activate(plugin:ReactRNPlugin) {
       finally{busy=false;}
     };
     ws.onerror=()=>{};
-    ws.onclose=()=>{pause=true;if(!stopped)timer=setTimeout(connect,2500);};
+    ws.onclose=()=>{pause=true;for(const p of mediaPending.values())p.reject(new Error('Media verification connection closed'));mediaPending.clear();if(!stopped)timer=setTimeout(connect,2500);};
   };
   connect();
 }

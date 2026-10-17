@@ -59,4 +59,16 @@ class ConversionTests(unittest.TestCase):
         math=[s for block in b for s in block if s['kind']=='latex']
         self.assertEqual(len(math),1);self.assertEqual(math[0]['value'],r'B=\textrm{{$\mathbf{u}_1,\mathbf{u}_2$}}')
 
+    def test_units_modules_and_topics_are_nested_documents_with_stable_cross_module_refs(self):
+        c=self.c;c.args.course_id=999;c.args.title='Independent hierarchy fixture';c.course={'name':'Independent course'}
+        c.graph={str(i):{'id':i,'name':f'Topic {i}','unit':{'number':u,'name':f'Unit {u}'},'module':{'number':m,'name':f'Module {m}'},'prerequisites':pre}
+                 for i,u,m,pre in [(31,2,1,[]),(32,2,3,[31]),(41,5,1,[32])]}
+        c.order=list(c.graph);c.lessons={k:{'steps':[]} for k in c.graph};c.source_hashes={};c.progress_name='fixture'
+        c.convert();nodes={n['id']:n for n in c.nodes}
+        self.assertEqual(nodes['t32']['parentId'],'u2.m3');self.assertEqual(nodes['u2.m3']['parentId'],'u2')
+        self.assertIsNone(nodes['u5']['parentId']);self.assertEqual(nodes['t41']['parentId'],'u5.m1')
+        self.assertTrue(all(nodes[k]['document'] for k in ['u2','u5','u2.m1','u2.m3','u5.m1','t31','t32','t41']))
+        self.assertFalse(any(k.endswith('.meta') for k in nodes))
+        self.assertEqual(nodes['t41.pre32']['text'],[{'kind':'ref','targetId':'t32'}])
+
 if __name__=='__main__':unittest.main()
