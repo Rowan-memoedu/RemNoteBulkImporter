@@ -459,18 +459,55 @@ def render(args):
 
 def pack(args):
     root=Path(args.output);plan=json.loads((root/'draft-package.json').read_text(encoding='utf-8'));index=json.loads((root/'drawings-index.json').read_text(encoding='utf-8'));missing=[]
+    gaps=json.loads((root/'source-gaps.json').read_text(encoding='utf-8'))
+    assert all(g['kind'] in ['missing_question','missing_graphic'] for g in gaps),'Unresolved conversion loss/format errors'
+    math=json.loads((root/'math-final-audit.json').read_text())
+    assert math['errors']==0,'Native math audit has unresolved failures'
     for key in index:
         f=root/'drawings'/key/'drawing.png'
         if not f.exists():missing.append(key);continue
-        data=f.read_bytes();plan['assets'][key]={'mime':'image/png','base64':base64.b64encode(data).decode(),'sha256':digest(data)}
+        data=f.read_bytes();receipt=json.loads((f.parent/'success.json').read_text())
+        assert receipt['pngSha256']==digest(data),f'Image receipt mismatch {key}'
+        plan['assets'][key]={'mime':'image/png','base64':base64.b64encode(data).decode(),'sha256':digest(data)}
     if missing:raise ValueError(f'{len(missing)} diagrams not rendered; refuse final package')
     out=Path(args.package);dump(out,plan)
     print(json.dumps({'phase':'packed','path':str(out),'bytes':out.stat().st_size,'nodes':len(plan['nodes']),'assets':len(plan['assets'])}),flush=True)
 
+def audit(args):
+    root=Path(args.output);plan=json.loads(Path(args.package).read_text(encoding='utf-8'));nodes={n['id']:n for n in plan['nodes']}
+    assert len(nodes)==len(plan['nodes']),'Duplicate package IDs'
+    with zipfile.ZipFile(args.graph) as z:graph=json.loads(z.read(f'course-knowledge-graph/course-{args.course_id}.json'))['topics']
+    assert {n['id'] for n in nodes.values() if n['document']}=={'t'+tid for tid in graph},'Topic document set differs from source'
+    children=collections.defaultdict(list)
+    for n in plan['nodes']:children[n['parentId']].append(n)
+    actual=set();steps=collections.Counter()
+    for tid,t in graph.items():
+        n=nodes['t'+tid]
+        assert n['parentId'] is None and n['text']==[{'kind':'text','value':t['name']}],f'Topic identity/placement mismatch {tid}'
+        for child in children['t'+tid+'.prereqs']:
+            for s in child['text']:
+                if s['kind']=='ref':actual.add((int(tid),int(s['targetId'][1:])))
+        lesson=json.loads((root/'source'/f'topic-{tid}.json').read_text(encoding='utf-8'))['lesson']
+        for step in lesson['steps']:
+            assert f't{tid}.s{step["id"]}' in nodes,'Source lesson step missing'
+            steps[step['type']]+=1
+    expected={(t['id'],p) for t in graph.values() for p in t['prerequisites']}
+    assert actual==expected,'Prerequisite edges differ from source'
+    math=json.loads((root/'math-final-audit.json').read_text());assert math['errors']==0
+    assert sum(s['kind']=='latex' for n in nodes.values() for s in n['text'])==math['count'],'Math audit is stale'
+    images=collections.Counter(s['assetId'] for n in nodes.values() for s in n['text'] if s['kind']=='image')
+    assert set(images)==set(plan['assets']),'Image set differs from package assets'
+    for key,a in plan['assets'].items():assert digest(base64.b64decode(a['base64']))==a['sha256'],'Asset digest mismatch'
+    gaps=json.loads((root/'source-gaps.json').read_text(encoding='utf-8'))
+    assert all(g['kind'] in ['missing_question','missing_graphic'] for g in gaps),'Unresolved conversion errors'
+    report={'status':'PASSED','topics':len(graph),'edges':len(actual),'steps':dict(steps),'nodes':len(nodes),'nativeFormulas':math['count'],'formulaErrors':0,'uniqueImages':len(images),'imageOccurrences':sum(images.values()),'sourceGaps':dict(collections.Counter(g['kind'] for g in gaps))}
+    dump(root/'package-audit.json',report);print(json.dumps(report),flush=True)
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('stage',choices=['convert','render','pack']);p.add_argument('--graph');p.add_argument('--progress');p.add_argument('--topics');p.add_argument('--course-id',type=int,default=154);p.add_argument('--title',default='数学物理方法一（MA）');p.add_argument('--output',required=True);p.add_argument('--tectonic');p.add_argument('--pdftoppm');p.add_argument('--workers',type=int,default=2);p.add_argument('--limit',type=int);p.add_argument('--retry-failed',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--math-audit');p.add_argument('--package')
+    p=argparse.ArgumentParser();p.add_argument('stage',choices=['convert','render','pack','audit']);p.add_argument('--graph');p.add_argument('--progress');p.add_argument('--topics');p.add_argument('--course-id',type=int,default=154);p.add_argument('--title',default='数学物理方法一（MA）');p.add_argument('--output',required=True);p.add_argument('--tectonic');p.add_argument('--pdftoppm');p.add_argument('--workers',type=int,default=2);p.add_argument('--limit',type=int);p.add_argument('--retry-failed',action='store_true');p.add_argument('--plan-only',action='store_true');p.add_argument('--math-audit');p.add_argument('--package')
     a=p.parse_args()
     if a.stage=='convert':c=Converter(a);c.load();c.convert()
     elif a.stage=='render':render(a)
+    elif a.stage=='audit':audit(a)
     else:pack(a)
 if __name__=='__main__':main()

@@ -82,6 +82,7 @@ The engine tests cover forward and cyclic content references, hierarchy/order, p
 - Paragraph breaks are preserved inside native multiline Rems; titles, examples, question/answer fields, options and prerequisite branches keep their logical hierarchy. Human-facing course text contains no operational IDs, paths, hashes or audit receipts.
 - `render`: uses existing Tectonic with `--untrusted`, hash-addressed work directories and D: caches; rasterizes PDFs with Poppler/Pillow. Independent panels can be shipped separately when TeX runs out of page memory. A faceted-coloring fallback retains sampled coordinates, mesh, labels and equations when interpolated shading exceeds engine memory. Every such transformation is recorded beside the source image, and successful renders are reused.
 - `pack`: requires all referenced drawing outputs, embeds image bytes and hashes, and writes a generic package. `consumers/audit-math.mjs` validates every native expression using KaTeX; its failure report can feed original-SVG fallback with `--math-audit`.
+- `audit`: independently compares the finished package against source Topic identities, prerequisite edges and every lesson step; verifies that math audit counts and image digests still match the package. Packing rejects unhandled conversion loss and missing drawing receipts.
 
 The converter uses the bundled desktop Python runtime (Pillow), existing Tectonic and Poppler paths. No full TeX Live installation is required. Run its independent fixtures with the bundled Python:
 
