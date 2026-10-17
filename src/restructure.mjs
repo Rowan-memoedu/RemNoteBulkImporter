@@ -117,8 +117,10 @@ export async function restructureImport(adapter,plan,request,options={}){
   const before=sourceChildren(request.basePlan),after=sourceChildren(plan);
   const parents=[...new Set([...after.keys(),...before.keys()])].filter(id=>cp.mapping[id]&&stableJSON(before.get(id)??[])!==stableJSON(after.get(id)??[])).map(id=>cp.mapping[id]);
   const finalOwned=new Set(Object.values(cp.mapping));
-  for(let i=state.ordered;i<parents.length;i++){
-    if(await guard())return paused();const parent=parents[i],wanted=children.get(parent)??[],rem=await adapter.find(parent);requireValue(rem,'Structure parent missing');
+  for(let start=state.ordered;start<parents.length;start+=16){
+    if(await guard())return paused();const end=Math.min(start+16,parents.length);
+    await adapter.transaction(async()=>{for(let i=start;i<end;i++){
+    const parent=parents[i],wanted=children.get(parent)??[],rem=await adapter.find(parent);requireValue(rem,'Structure parent missing');
     const actual=await adapter.children(rem),actualOwned=adapter.preserveExternalChildren?actual.filter(id=>finalOwned.has(id)):actual;
     requireValue(actualOwned.length===wanted.length&&actualOwned.every(id=>wanted.includes(id)),'Unexpected owned children during structure ordering');
     const target=adapter.preserveExternalChildren?preserveExternalSlots(actual,wanted,finalOwned):wanted;
@@ -130,7 +132,10 @@ export async function restructureImport(adapter,plan,request,options={}){
       working.splice(working.indexOf(child._id),1);working.splice(position,0,child._id);
     }
     requireValue(stableJSON(working)===stableJSON(target),'Structure ordering did not converge');
-    state.ordered=i+1;await adapter.save(info.hash,cp);
+    }});
+    // Commit progress only after this small transaction. A partial native commit
+    // is safely re-read on resume; already-correct positions are never moved again.
+    state.ordered=end;await adapter.save(info.hash,cp);emit('structure-order',state.ordered,parents.length);
   }
   state.complete=true;cp.created=plan.nodes.length+1;cp.written=cp.created;cp.phase='write';await adapter.save(info.hash,cp);
   return await runImport(adapter,plan,request,options);

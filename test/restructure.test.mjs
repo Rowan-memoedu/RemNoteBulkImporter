@@ -109,3 +109,16 @@ test('batched annotation creation recovers a committed batch after mapping check
   assert.equal(a.rems.size,new Set(a.rems.keys()).size);for(const n of top.nodes)assert.ok(result.mapping[n.id]);
   assert.ok(a.rems.size>=count);assert.equal(a.rems.size,Object.keys(result.mapping).length+3);assert.equal([...a.rems.values()].filter(n=>n.text[0]?.startsWith?.('RBI:')).length,0);
 });
+test('failed ordering checkpoint re-reads committed positions without moving children twice',async()=>{
+  const {a,next,revision}=await fixture(),top=topAnnotationLayout(annotateDocuments(next)),request={...revision,packageHash:(await inspectPackage(top)).hash},save=a.save.bind(a),move=a.move.bind(a);let failed=false,moves=0;
+  a.move=async(...args)=>{moves++;return move(...args);};
+  a.save=async(hash,cp)=>{if(hash===request.packageHash&&cp.restructure?.ordered>0&&!failed){failed=true;throw new Error('order checkpoint failure');}return save(hash,cp);};
+  await assert.rejects(restructureImport(a,top,request),/order checkpoint/);const committedMoves=moves,count=a.rems.size;
+  const result=await restructureImport(a,top,request,{yieldMs:0});assert.equal(result.status,'complete');assert.equal(moves,committedMoves);assert.equal(a.rems.size,count);
+});
+test('a partially committed ordering transaction resumes by actual positions',async()=>{
+  const {a,next,revision}=await fixture(),top=topAnnotationLayout(annotateDocuments(next)),request={...revision,packageHash:(await inspectPackage(top)).hash},move=a.move.bind(a);let reordered=0,failed=false;
+  a.move=async(rem,parent,index)=>{const same=a.rems.get(rem._id).parent===parent;await move(rem,parent,index);if(same&&++reordered===2&&!failed){failed=true;throw new Error('partial ordering transaction');}};
+  await assert.rejects(restructureImport(a,top,request),/partial ordering/);const count=a.rems.size;
+  const result=await restructureImport(a,top,request,{yieldMs:0});assert.equal(result.status,'complete');assert.equal(a.rems.size,count);assert.equal(result.verified,top.nodes.length+1);
+});
