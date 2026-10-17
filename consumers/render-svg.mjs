@@ -1,0 +1,10 @@
+import {Resvg} from '@resvg/resvg-js';
+import {readFile,writeFile} from 'node:fs/promises';
+const [source,output]=process.argv.slice(2);let svg=await readFile(source,'utf8');
+if(/<script|<foreignObject|\son[a-z]+\s*=|(?:href|xlink:href)\s*=\s*["'](?!#)/i.test(svg))throw new Error('Unsupported active/external SVG content');
+const match=svg.match(/viewBox="([^"]+)"/);if(!match)throw new Error('Missing SVG viewport');
+const [, ,w,h]=match[1].trim().split(/\s+/).map(Number);if(!(w>0&&h>0))throw new Error('Invalid SVG viewport');
+const width=Math.ceil(w*18/1000),height=Math.ceil(h*18/1000);
+svg=svg.replace(/<svg\b[^>]*>/,root=>root.replace(/\swidth="[^"]*"/,` width="${width}"`).replace(/\sheight="[^"]*"/,` height="${height}"`));
+const png=new Resvg(svg,{background:'white',fitTo:{mode:'width',value:width}}).render().asPng();await writeFile(output,png);
+console.log(JSON.stringify({source,output,width,height,bytes:png.length}));

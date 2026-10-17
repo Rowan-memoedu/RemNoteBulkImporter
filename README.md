@@ -4,7 +4,7 @@ Independent personal RemNote plugin and loopback MCP service for importing a pre
 
 Source: `D:/Projects/RemNoteBulkImporter`. Build artifacts: `D:/Artifacts/RemNoteBulkImporter`. Runtime state: `D:/AppData/RemNoteBulkImporter`. Imported course data and private knowledge-base contents stay outside Git.
 
-## Intended contract
+## Import contract
 
 - Validate the entire package before writing; use package-local stable node IDs and references.
 - Create real documents and RichText references using the official RemNote plugin SDK.
@@ -64,12 +64,31 @@ Full readback checks every imported node's RichText hash, parent, document flag,
 
 Small creation transactions use deterministic temporary sentinel titles. A committed creation followed by checkpoint failure can be recovered by sentinel under its exact owned parent. Titles become final only after all node IDs are recorded. If a user edits or deletes an imported node, resuming stops before overwriting it. A failed task can leave its newly created partial subtree in place; it does not delete it automatically. Preserve plugin-local checkpoint data while an import is incomplete. Uninstalling a plugin or clearing local data is not a supported checkpoint recovery method.
 
-Image RichText support is implemented but still needs actual RemNote canary acceptance, including managed-media persistence. Mock tests and static builds do not prove cloud synchronization, app performance under a full course, or a successful installation. Imported-source formatting and mathematical rendering require a separate source-conversion audit.
+The installed plugin has passed real RemNote canaries for document flags, forward references, multiline text, native math and formatting, plus an embedded 116,856-byte PNG with exact RichText readback. Images use embedded data URLs; the old bridge's managed-local-media retrieval does not cover this representation. These tests do not establish cross-device/cloud image synchronization. Imported-source formatting and mathematical rendering require a separate source-conversion audit.
 
 ## Validation
 
 `npm test`, `npm run typecheck`, and `node node_modules/@remnote/plugin-sdk/scripts/index.js validate`.
 
 The engine tests cover forward and cyclic content references, hierarchy/order, pause/resume, create-commit/checkpoint failure, write-commit/checkpoint failure, SDK rollback, duplicate rejection, knowledge-base changes, edited/missing notes and exact readback. A separate transport integration test exercises a real MCP client, HTTP transport and WebSocket; it uses a simulated plugin, not a real RemNote knowledge base. `npm run canary` prepares a seven-node test package with two Topic documents, a reference, a native formula, a multiline Rem, formatting and an embedded PNG. Import it only after installing the plugin.
+
+## Math Academy consumer
+
+`consumers/math_academy.py` converts the supplied course graph, progress snapshots and lesson JSON into the generic package. It reads the provided answer archive only to recover matching question/graphic source; learner names, history and progress values are not imported. Source exports, graphics and evidence remain under `D:/Artifacts/RemNoteBulkImporter`, never in Git.
+
+- `convert`: validates course identities across graph and progress, orders every Topic by the exported course/module/topic numbers, creates package-local prerequisite references, and retains original lesson JSON separately.
+- MathJax-rendered HTML with original LaTeX in SVG titles is preferred where available, because some `[math]` strings in the source export are damaged. Unsupported/legacy syntax is mechanically converted without changing mathematical payloads. The brace-aware delimiter scanner preserves nested math inside text macros. Original notation can fall back to its supplied SVG when native KaTeX cannot represent it.
+- Unpublished HTML comments, styles and scripts remain in source exports and are excluded from readable lesson text. Missing question bodies/images get explicit local placeholders; standard answers are never inferred from option order.
+- Paragraph breaks are preserved inside native multiline Rems; titles, examples, question/answer fields, options and prerequisite branches keep their logical hierarchy. Human-facing course text contains no operational IDs, paths, hashes or audit receipts.
+- `render`: uses existing Tectonic with `--untrusted`, hash-addressed work directories and D: caches; rasterizes PDFs with Poppler/Pillow. Independent panels can be shipped separately when TeX runs out of page memory. A faceted-coloring fallback retains sampled coordinates, mesh, labels and equations when interpolated shading exceeds engine memory. Every such transformation is recorded beside the source image, and successful renders are reused.
+- `pack`: requires all referenced drawing outputs, embeds image bytes and hashes, and writes a generic package. `consumers/audit-math.mjs` validates every native expression using KaTeX; its failure report can feed original-SVG fallback with `--math-audit`.
+
+The converter uses the bundled desktop Python runtime (Pillow), existing Tectonic and Poppler paths. No full TeX Live installation is required. Run its independent fixtures with the bundled Python:
+
+```powershell
+<bundled-python> -m unittest discover -s test -p test_ma_conversion.py -v
+```
+
+The current local course package audit is `D:/Artifacts/RemNoteBulkImporter/course-154/package-audit.json`. It verifies all source Topic identities, direct prerequisite edges and lesson steps separately from the generic SDK readback. Runtime completion is tracked by the MCP job; a prepared package or a successful conversion audit is not a completed RemNote import.
 
 Official references: [Rem API](https://plugins.remnote.com/advanced/rem_api), [RichText](https://plugins.remnote.com/advanced/rich_text), [SDK changelog and transaction warning](https://plugins.remnote.com/CHANGELOG), [local plugin setup](https://plugins.remnote.com/getting-started/quick_start_guide).
