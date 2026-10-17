@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "remnote-bulk-importer",
+  "name": "Local Bulk Importer",
+  "author": "Rowan",
+  "description": "Import a prepared document tree and exact internal references as one resumable local MCP job.",
+  "version": { "major": 0, "minor": 1, "patch": 0 },
+  "repoUrl": "https://github.com/Rowan-memoedu/RemNoteBulkImporter",
+  "enableOnMobile": false,
+  "requestNative": false,
+  "requiredScopes": [
+    { "type": "KnowledgeBaseInfo", "level": "Read" },
+    { "type": "All", "level": "ReadCreateModify" }
+  ]
+}
