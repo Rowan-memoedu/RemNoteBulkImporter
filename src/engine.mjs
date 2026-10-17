@@ -38,7 +38,19 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     return false;
   };
   // Mapped Rems must still exist. Never silently recreate deleted user-edited material.
-  for(const [key,id] of Object.entries(cp.mapping)) assert(await adapter.find(id),`Mapped Rem missing (${key}); refusing duplicate recreation`);
+  const mapped=Object.entries(cp.mapping);
+  if(mapped.length && adapter.findMany){
+    for(let start=0;start<mapped.length;start+=128){
+      if(await guard())return {status:'paused',...info,rootRemId:cp.mapping.$root};
+      const rows=mapped.slice(start,start+128);
+      const snapshots=await adapter.findMany(rows.map(([,id])=>id));
+      assert(await adapter.kbId()===kbId,'Knowledge base changed during resume check');
+      const found=new Set((snapshots??[]).map(rem=>rem._id));
+      for(const [key,id] of rows)assert(found.has(id),`Mapped Rem missing (${key}); refusing duplicate recreation`);
+      progress({phase:'resume-check',created:cp.created,written:cp.written,verified:cp.verified,total:nodes.length,checked:Math.min(start+128,mapped.length),resumeTotal:mapped.length,rootRemId:cp.mapping.$root??null});
+      await delay(yieldMs);
+    }
+  } else for(const [key,id] of mapped)assert(await adapter.find(id),`Mapped Rem missing (${key}); refusing duplicate recreation`);
   emit();
   while(cp.created<nodes.length) {
     if(await guard()) return {status:'paused',...info,rootRemId:cp.mapping.$root};

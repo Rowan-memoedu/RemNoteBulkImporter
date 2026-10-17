@@ -8,6 +8,7 @@ import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {z} from 'zod';
 import {inspectPackage} from './package.mjs';
+import {VERSION} from './version.mjs';
 
 export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteBulkImporter/plugin',importRoot='D:/Artifacts/RemNoteBulkImporter/packages',stateRoot='D:/AppData/RemNoteBulkImporter'}={}) {
   for(const dir of [importRoot,stateRoot])await mkdir(dir,{recursive:true});
@@ -42,6 +43,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     const job=jobs.get(jobId);if(!job)throw new Error('Prepare package first');
     if(job.status==='complete')return summary(job);
     if(active)throw new Error(`Another import is active: ${active}`);
+    if(identity?.version!==VERSION)throw new Error(`Reload the independent Bulk Importer plugin to ${VERSION} before resuming; existing checkpoint and nodes are retained`);
     const live=await rpc('status');if(live.busy)throw new Error('Plugin is busy finishing its previous task');
     if(job.kbId && (job.kbId!==live.kbId || job.parentRemId!==parentRemId))throw new Error('Cannot resume in a different knowledge base or destination');
     const plan=JSON.parse(await readFile(job.planPath,'utf8'));if((await inspectPackage(plan)).hash!==jobId)throw new Error('Prepared package changed');
@@ -55,7 +57,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
   const pause=async({jobId})=>{if(active!==jobId)throw new Error('Job is not active');bridge.send(JSON.stringify({type:'pause'}));return {jobId,status:'pause_requested'};};
   const toolResult=data=>({content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data});
   const makeMcp=()=>{
-    const mcp=new McpServer({name:'remnote-bulk-importer',version:'0.1.0'});
+    const mcp=new McpServer({name:'remnote-bulk-importer',version:VERSION});
     const register=(name,description,inputSchema,fn)=>mcp.registerTool(name,{description,inputSchema},async(args)=>{
       try{return toolResult(await fn(args));}catch(e){return {isError:true,content:[{type:'text',text:e instanceof Error?e.message:String(e)}]};}
     });
@@ -79,7 +81,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
       try{await mcp.connect(transport);await transport.handleRequest(req,res);}catch(e){if(!res.headersSent)res.writeHead(500).end('MCP transport error');}return;
     }
     if(url.pathname==='/health'){
-      res.setHeader('Content-Type','application/json');res.end(JSON.stringify({service:'remnote-bulk-importer',version:'0.1.0',connected:!!bridge,activeJob:active}));return;
+      res.setHeader('Content-Type','application/json');res.end(JSON.stringify({service:'remnote-bulk-importer',version:VERSION,connected:!!bridge,activeJob:active}));return;
     }
     const file=({'/':'index.html','/index.html':'index.html','/index.js':'index.js','/index-sandbox.js':'index-sandbox.js','/manifest.json':'manifest.json'})[url.pathname];
     if(!file || !['GET','HEAD'].includes(req.method)){res.writeHead(404).end();return;}
@@ -104,12 +106,12 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     socket.on('message',raw=>{
       queued=queued.then(async()=>{
         const m=JSON.parse(raw.toString());
-        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||m.version!=='0.1.0')throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
+        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
         if(m.type==='reply'){
           const entry=pending.get(m.id);if(entry){clearTimeout(entry.timer);pending.delete(m.id);m.error?entry.reject(new Error(m.error)):entry.resolve(m.result);}return;
         }
         const job=jobs.get(m.jobId);if(!job||active!==m.jobId)return;
-        if(m.type==='progress'){job.progress={phase:m.phase,created:m.created,written:m.written,verified:m.verified,total:m.total,rootRemId:m.rootRemId};}
+        if(m.type==='progress'){job.progress={phase:m.phase,created:m.created,written:m.written,verified:m.verified,total:m.total,rootRemId:m.rootRemId,...(m.checked!==undefined?{checked:m.checked,resumeTotal:m.resumeTotal}:{})};}
         else if(m.type==='result'){
           // Only an engine result after full audit can be complete.
           if(!['complete','paused'].includes(m.result?.status))throw new Error('Invalid result status');
@@ -123,7 +125,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     socket.on('close',()=>{
       clearTimeout(helloTimer);if(bridge===socket){bridge=null;identity=null;}
       for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Plugin disconnected'));}pending.clear();
-      if(active){const job=jobs.get(active);job.status='interrupted';job.error='Plugin disconnected; resume the same immutable package';active=null;persist(job).catch(()=>{});}
+      if(active){const job=jobs.get(active);job.status='interrupted';job.error='Plugin disconnected; resume the same immutable package';job.updatedAt=new Date().toISOString();active=null;persist(job).catch(()=>{});}
     });
   });
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});

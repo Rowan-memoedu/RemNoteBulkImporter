@@ -1,6 +1,7 @@
 import { declareIndexPlugin, type ReactRNPlugin } from '@remnote/plugin-sdk';
 import { runImport } from './engine.mjs';
 import { sdkAdapter } from './sdk-adapter';
+import { VERSION } from './version.mjs';
 
 let ws: WebSocket|undefined;
 let timer: ReturnType<typeof setTimeout>|undefined;
@@ -16,7 +17,7 @@ async function activate(plugin:ReactRNPlugin) {
   const connect=()=>{
     if(stopped)return;
     ws=new WebSocket(address);
-    ws.onopen=()=>send({type:'hello',pluginId:'remnote-bulk-importer',version:'0.1.0',busy});
+    ws.onopen=()=>send({type:'hello',pluginId:'remnote-bulk-importer',version:VERSION,busy});
     ws.onmessage=async(event)=>{
       let m:any;
       try { m=JSON.parse(event.data); } catch { return; }

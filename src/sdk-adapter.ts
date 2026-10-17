@@ -1,12 +1,15 @@
 import type { ReactRNPlugin, RichTextInterface } from '@remnote/plugin-sdk';
 import { stableJSON } from './package.mjs';
+import { checkpointStore } from './checkpoint.mjs';
 
 export function sdkAdapter(plugin: ReactRNPlugin, kbId: string) {
+  const checkpoints=checkpointStore(plugin.storage,kbId);
   return {
     kbId: async () => (await plugin.kb.getCurrentKnowledgeBaseData())._id,
-    load: async (hash: string) => plugin.storage.getLocal<any>(`rbi:${kbId}:${hash}`),
-    save: async (hash: string, cp: any) => plugin.storage.setLocal(`rbi:${kbId}:${hash}`,cp),
+    load: checkpoints.load,
+    save: checkpoints.save,
     find: (id: string) => plugin.rem.findOne(id),
+    findMany: (ids: string[]) => plugin.rem.findMany(ids),
     findSentinel: (title: string,parent: string|null) => plugin.rem.findByName([title],parent),
     createSentinel: async (title: string,parent: string|null,document: boolean) => {
       const rem = await plugin.rem.createRem();
@@ -48,6 +51,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string) {
     practiceEnabled: (rem:any) => rem.getEnablePractice(),
     isDocument: (rem:any) => rem.isDocument(),
     refs: (rem:any) => plugin.richText.getRemIdsFromRichText(rem.text ?? []),
-    children: async (rem:any) => (await rem.getChildrenRem()).map((r:any)=>r._id),
+    // findOne/findMany already returns fresh, ordered child IDs.
+    children: async (rem:any) => rem.children ?? [],
   };
 }

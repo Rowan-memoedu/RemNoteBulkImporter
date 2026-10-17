@@ -2,6 +2,7 @@ import {build} from 'esbuild';
 import {mkdir,readFile,writeFile,copyFile} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {VERSION} from '../src/version.mjs';
 const out='D:/Artifacts/RemNoteBulkImporter/plugin';
 await mkdir(out,{recursive:true});
 for(const file of ['manifest.json','index.html'])await copyFile(`public/${file}`,path.join(out,file));
@@ -15,5 +16,5 @@ for(const sandbox of [false,true])await build({
 const files={};for(const f of ['manifest.json','index.html','index.js','index-sandbox.js']){
   const data=await readFile(path.join(out,f));files[f]={bytes:data.length,sha256:createHash('sha256').update(data).digest('hex')};
 }
-await writeFile('D:/Artifacts/RemNoteBulkImporter/build.json',JSON.stringify({version:'0.1.0',files},null,2));
+await writeFile('D:/Artifacts/RemNoteBulkImporter/build.json',JSON.stringify({version:VERSION,files},null,2));
 console.log(JSON.stringify({build:'success',out,files}));

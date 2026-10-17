@@ -22,7 +22,7 @@ Requires Node 22+ and the official RemNote plugin SDK. `npm ci` restores pinned 
 1. `npm run build` writes only to `D:/Artifacts/RemNoteBulkImporter/plugin`.
 2. `npm start` serves plugin assets and the independent MCP endpoint on loopback port **43106**. It never connects to the old bridge on 43101/43102/43103.
 3. In RemNote's developer-plugin entry (Settings → Plugins → Build → Develop from localhost), add `http://localhost:43106`. The official installation UI wording may vary by RemNote version. Installing this plugin is a one-time manual step; the existing RemNote MCP does not expose plugin installation.
-4. `node src/cli.mjs status` verifies the new plugin connection and reports the active knowledge base. No app restart is required by this workflow.
+4. `node src/cli.mjs status` verifies the loaded plugin version and active knowledge base. A subsequent build does not prove that RemNote has reloaded it. The service rejects imports from an older loaded plugin; reload the developer plugin before resuming. The existing MCP does not expose plugin reload.
 
 The plugin uses native commands/toasts instead of a custom web control panel. `rbi` in RemNote's command menu shows connection status. SDK permission is Read/Create/Modify plus knowledge-base identity; no delete permission is requested. Disable the plugin and stop this one local process to unload it; imported data remains in RemNote.
 
@@ -63,6 +63,8 @@ Full readback checks every imported node's RichText hash, parent, document flag,
 ## Recovery boundaries
 
 Small creation transactions use deterministic temporary sentinel titles. A committed creation followed by checkpoint failure can be recovered by sentinel under its exact owned parent. Titles become final only after all node IDs are recorded. If a user edits or deletes an imported node, resuming stops before overwriting it. A failed task can leave its newly created partial subtree in place; it does not delete it automatically. Preserve plugin-local checkpoint data while an import is incomplete. Uninstalling a plugin or clearing local data is not a supported checkpoint recovery method.
+
+Version 0.1.1 validates existing mapped IDs with SDK `findMany` in batches of 128. Checkpoints use append-only pages of 256 entries and commit compact metadata last. Only changed tail pages are rewritten. The original full checkpoint remains as the migration source; it is never deleted during recovery. Tests cover migration and a failed metadata commit. These changes reduce resume and checkpoint overhead; they do not establish the cause of an application restart.
 
 The installed plugin has passed real RemNote canaries for document flags, forward references, multiline text, native math and formatting, plus an embedded 116,856-byte PNG with exact RichText readback. Images use embedded data URLs; the old bridge's managed-local-media retrieval does not cover this representation. These tests do not establish cross-device/cloud image synchronization. Imported-source formatting and mathematical rendering require a separate source-conversion audit.
 

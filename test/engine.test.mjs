@@ -101,3 +101,13 @@ test('image bytes must have correct hash and MIME signature',async()=>{
   p.nodes[0].text.push({kind:'image',assetId:'image'});assert.equal((await inspectPackage(p)).assets,1);
   p.assets.image.sha256='0'.repeat(64);await assert.rejects(inspectPackage(p),/hash mismatch/);
 });
+test('resume validates existing IDs in bounded SDK batches instead of one read per ID',async()=>{
+  const a=new MockAdapter(),p={schemaVersion:1,packageId:'batch.resume.canary',title:'Batch resume',nodes:Array.from({length:300},(_,i)=>({id:`n${i}`,parentId:null,document:false,text:[{kind:'text',value:`Item ${i}`}]}))};
+  const r=await request(p);let pause=false;
+  await runImport(a,p,r,{...options,batchSize:32,progress:x=>{if(x.created===301)pause=true;},shouldPause:()=>pause});
+  let batchCalls=0;const progress=[];
+  a.findMany=async ids=>{batchCalls++;return Promise.all(ids.map(id=>a.find(id)));};
+  const result=await runImport(a,p,r,{...options,batchSize:32,progress:x=>progress.push(x)});
+  assert.equal(result.status,'complete');assert.equal(batchCalls,3);
+  assert.equal(progress.filter(x=>x.phase==='resume-check').at(-1).checked,301);
+});
