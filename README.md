@@ -99,7 +99,7 @@ The 0.1.9 suite has 54 passing tests, including batched structure creation, part
 
 ## Math Academy consumer
 
-`npm run course -- prepare ...` now runs the complete local conversion, math audit, source-SVG fallback, diagram rendering, native prerequisite packaging, annotation layout and two independent source checks. Use explicit `import` with the expected KB ID to submit the prepared package through the existing MCP engine and wait for full readback. [Course workflow commands and recovery](consumers/course-workflow.md) document the arguments, stage fingerprints, completed-job adoption and duplicate prevention. Parallel preparation uses separate artifact directories; RemNote imports share one serial queue.
+`npm run course -- prepare ...` now runs the complete local conversion, math audit, source-SVG fallback, diagram rendering, native prerequisite packaging, annotation layout and two independent source checks. Use explicit `import` with the expected KB ID to submit the prepared package through the existing MCP engine and wait for full readback. [Course workflow commands and recovery](consumers/course-workflow.md) document the arguments, stage fingerprints, completed-job adoption and duplicate prevention. Parallel preparation uses separate artifact directories; RemNote imports must run serially.
 
 `consumers/math_academy.py` converts the supplied course graph, progress snapshots and lesson JSON into the generic package. It reads the provided answer archive only to recover matching question/graphic source; learner names, history and progress values are not imported. Source exports, graphics and evidence remain under `D:/Artifacts/RemNoteBulkImporter`, never in Git.
 
