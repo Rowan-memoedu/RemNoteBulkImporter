@@ -1,10 +1,12 @@
 import {inspectPackage,stableJSON,sha256} from './package.mjs';
 import {runImport} from './engine.mjs';
+import {boundedRead} from './bounded-read.mjs';
+import {ownedChildren,preserveExternalSlots} from './owned-children.mjs';
 const requireValue=(ok,message)=>{if(!ok)throw new Error(message);};
 const root=plan=>({id:'$root',parentId:null,document:true,text:[{kind:'text',value:plan.title}]});
 
 /** Only structure may change: retained text/assets/refs remain byte-identical.
- * Add documents, reparent retained Rems, and archive obsolete plain leaf metadata.
+ * Add plain-text documents/nodes, reparent retained Rems, archive obsolete plain leaves.
  */
 export function planStructureChange(base,next){
   requireValue(base.packageId===next.packageId&&base.title===next.title,'Structure revision must retain package identity and title');
@@ -14,7 +16,7 @@ export function planStructureChange(base,next){
   for(const n of next.nodes)if(old.has(n.id)){
     requireValue(n.document===old.get(n.id).document&&stableJSON(n.text)===stableJSON(old.get(n.id).text),`Structure revision changes retained content: ${n.id}`);
   }
-  for(const n of added)requireValue(n.document&&n.text.every(s=>s.kind==='text'),'Structure revision may add plain-title documents only');
+  for(const n of added)requireValue(n.text.every(s=>s.kind==='text'),'Structure revision may add plain-text documents and nodes only');
   for(const n of removed)requireValue(!n.document&&n.text.every(s=>s.kind==='text')&&!base.nodes.some(c=>c.parentId===n.id)&&!base.nodes.some(c=>c.text.some(s=>s.kind==='ref'&&s.targetId===n.id)),`Cannot archive non-leaf or referenced content: ${n.id}`);
   const moved=next.nodes.filter(n=>old.has(n.id)&&n.parentId!==old.get(n.id).parentId);
   return {added,removed,moved};
@@ -36,6 +38,7 @@ export async function restructureImport(adapter,plan,request,options={}){
     await adapter.save(info.hash,cp);
   }
   const state=cp.restructure;
+  const baseOwned=new Set(Object.values(base.mapping));
   requireValue(state?.baseHash===baseInfo.hash&&state.archiveParentRemId===request.archiveParentRemId&&cp.kbId===kbId&&cp.parentRemId===base.parentRemId,'Structure checkpoint identity mismatch');
   const emit=(phase,done,total)=>options.progress?.({phase,created:cp.created,written:cp.written,verified:cp.verified,total:plan.nodes.length+1,rootRemId:cp.mapping.$root,checked:done,resumeTotal:total});
   const guard=async()=>{
@@ -47,7 +50,7 @@ export async function restructureImport(adapter,plan,request,options={}){
   const owned=async(id,expectedHash,allowedParents)=>{
     const rem=await adapter.find(id);requireValue(rem,'Owned structure node is missing');
     requireValue(allowedParents.includes(rem.parent),'Owned structure node moved outside expected parents');
-    requireValue(await sha256(await adapter.canonical(rem.text??[]))===expectedHash,'Owned structure node text was edited');return rem;
+    requireValue(adapter.matchesExpected?await adapter.matchesExpected(rem.text??[],expectedHash):await sha256(await adapter.canonical(rem.text??[]))===expectedHash,'Owned structure node text was edited');return rem;
   };
   if(!state.preflight){
     const all=[root(request.basePlan),...request.basePlan.nodes],expectedChildren=new Map();
@@ -58,13 +61,13 @@ export async function restructureImport(adapter,plan,request,options={}){
       if(await guard())return paused();const rows=all.slice(start,start+128);
       const snapshots=adapter.findMany?await adapter.findMany(rows.map(n=>base.mapping[n.id])):await Promise.all(rows.map(n=>adapter.find(base.mapping[n.id])));
       const found=new Map(snapshots.map(r=>[r._id,r]));
-      for(const n of rows){
+      await boundedRead(rows,async n=>{
         const rem=found.get(base.mapping[n.id]);requireValue(rem,`Missing base node ${n.id}`);
         requireValue(rem.parent===mappedParent(n,base.mapping),`Base node was moved: ${n.id}`);
-        requireValue(await sha256(await adapter.canonical(rem.text??[]))===base.expected[n.id],`Base node text was edited: ${n.id}`);
+        requireValue(adapter.matchesExpected?await adapter.matchesExpected(rem.text??[],base.expected[n.id]):await sha256(await adapter.canonical(rem.text??[]))===base.expected[n.id],`Base node text was edited: ${n.id}`);
         requireValue(await adapter.isDocument(rem)===n.document,`Base document flag changed: ${n.id}`);
-        requireValue(stableJSON(await adapter.children(rem))===stableJSON(expectedChildren.get(rem._id)??[]),`Base children changed: ${n.id}`);
-      }
+        requireValue(ownedChildren(await adapter.children(rem),expectedChildren.get(rem._id)??[],baseOwned,adapter.preserveExternalChildren)!==null,`Base children changed: ${n.id}`);
+      },4);
       emit('structure-preflight',Math.min(start+128,all.length),all.length);
     }
     state.preflight=true;await adapter.save(info.hash,cp);
@@ -72,9 +75,9 @@ export async function restructureImport(adapter,plan,request,options={}){
   for(let i=state.added;i<changes.added.length;i++){
     if(await guard())return paused();const n=changes.added[i],parent=mappedParent(n,cp.mapping),title=`RBI:${info.hash}:${n.id}`;
     let rem=cp.mapping[n.id]?await adapter.find(cp.mapping[n.id]):await adapter.findSentinel(title,parent);
-    if(!rem)rem=await adapter.createSentinel(title,parent,true);
+    if(!rem)rem=await adapter.createSentinel(title,parent,n.document);
     rem=await adapter.find(rem._id);
-    requireValue(rem&&rem.parent===parent&&await adapter.isDocument(rem),'Added document identity mismatch');
+    requireValue(rem&&rem.parent===parent&&await adapter.isDocument(rem)===n.document,'Added node identity mismatch');
     cp.mapping[n.id]=rem._id;await adapter.save(info.hash,cp);
     const rich=await adapter.compile(n.text,cp.mapping,plan.assets??{}),expected=await adapter.canonical(rich),actual=await adapter.canonical(rem.text??[]);
     requireValue(actual===expected||actual===await adapter.canonical([title]),'New structure document was edited');
@@ -105,11 +108,15 @@ export async function restructureImport(adapter,plan,request,options={}){
   }
   const affected=new Set([cp.mapping.$root,...changes.added.map(n=>cp.mapping[n.id]),...changes.removed.map(n=>base.mapping[n.parentId]),...changes.moved.flatMap(n=>[mappedParent(n,cp.mapping),mappedParent(request.basePlan.nodes.find(x=>x.id===n.id),base.mapping)])]);
   const parents=[...affected];
+  const finalOwned=new Set(Object.values(cp.mapping));
   for(let i=state.ordered;i<parents.length;i++){
     if(await guard())return paused();const parent=parents[i],wanted=children.get(parent)??[],rem=await adapter.find(parent);requireValue(rem,'Structure parent missing');
-    const actual=await adapter.children(rem);requireValue(actual.length===wanted.length&&actual.every(id=>wanted.includes(id)),'Unexpected children during structure ordering');
-    if(stableJSON(actual)!==stableJSON(wanted))for(let position=0;position<wanted.length;position++){
-      const child=await adapter.find(wanted[position]);requireValue(child?.parent===parent,'Structure child moved while ordering');await adapter.move(child,parent,position);
+    const actual=await adapter.children(rem),actualOwned=adapter.preserveExternalChildren?actual.filter(id=>finalOwned.has(id)):actual;
+    requireValue(actualOwned.length===wanted.length&&actualOwned.every(id=>wanted.includes(id)),'Unexpected owned children during structure ordering');
+    const target=adapter.preserveExternalChildren?preserveExternalSlots(actual,wanted,finalOwned):wanted;
+    if(stableJSON(actual)!==stableJSON(target))for(let position=0;position<target.length;position++){
+      if(!finalOwned.has(target[position]))continue;
+      const child=await adapter.find(target[position]);requireValue(child?.parent===parent,'Structure child moved while ordering');await adapter.move(child,parent,position);
     }
     state.ordered=i+1;await adapter.save(info.hash,cp);
   }

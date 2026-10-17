@@ -1,16 +1,24 @@
 import type { ReactRNPlugin, RichTextInterface } from '@remnote/plugin-sdk';
-import { stableJSON } from './package.mjs';
+import { stableJSON, sha256 } from './package.mjs';
 import { checkpointStore } from './checkpoint.mjs';
 import { sdkTransaction } from './sdk-transaction.mjs';
 import { nativeImage } from './native-image.mjs';
+import { describeRich } from './rich-diagnostic.mjs';
+import { imageReadbackCompatibility } from './rich-compat.mjs';
+import { imageTransportHashMatches } from './rich-hash.mjs';
 
-export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, verifyMedia: any) {
+export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, verifyMedia: any, packageAssets: any={}) {
   const call=monitor.call;
+  const compatibility=imageReadbackCompatibility(packageAssets,{
+    loadCached:(hash:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(`rbi-image:${kbId}:${hash}`)),
+    verify:(id:string,url:string)=>call('media.verify',()=>verifyMedia(id,url)),
+  });
   const checkpoints=checkpointStore({
     getLocal:(key:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(key)),
     setLocal:(key:string,value:any)=>call('storage.setLocal',()=>plugin.storage.setLocal(key,value)),
   },kbId);
-  return {
+  const adapter = {
+    preserveExternalChildren:true,
     context: monitor.setContext,
     kbId: async () => (await call('kb.getCurrentKnowledgeBaseData',()=>plugin.kb.getCurrentKnowledgeBaseData()))._id,
     load: checkpoints.load,
@@ -29,7 +37,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
       return rem;
     },
     transaction: <T>(fn:()=>Promise<T>) => call('app.transaction',()=>sdkTransaction((wrapped:any)=>plugin.app.transaction(wrapped),fn),180000),
-    compile: async (segments: any[], mapping: Record<string,string>, assets: Record<string,any>) => {
+    compile: async (segments: any[], mapping: Record<string,string>, assets: Record<string,any>, legacyImages=false) => {
       const result: RichTextInterface = [];
       for(const s of segments) {
         let part: RichTextInterface;
@@ -44,6 +52,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
           }
           case 'image': {
             const a=assets[s.assetId];
+            if(legacyImages){part=await call('richText.legacyImage',()=>plugin.richText.image(`data:${a.mime};base64,${a.base64}`).value());break;}
             part=[await nativeImage(s.assetId,a,{
               get:(hash:string)=>call('storage.getLocal',()=>plugin.storage.getLocal(`rbi-image:${kbId}:${hash}`)),
               set:(hash:string,value:any)=>call('storage.setLocal',()=>plugin.storage.setLocal(`rbi-image:${kbId}:${hash}`,value)),
@@ -57,14 +66,33 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
       }
       return result;
     },
-    canonical: async (rich: RichTextInterface) => stableJSON(await call('richText.normalize',()=>plugin.richText.normalize(rich))),
+    canonical: async (rich: RichTextInterface) => {
+      try{const input=await compatibility.input(rich);return stableJSON(await call('richText.normalize',()=>plugin.richText.normalize(input)));}
+      catch(error){
+        const failures=[];
+        if(Array.isArray(rich))for(let index=0;index<Math.min(rich.length,200);index++){
+          try{await call('richText.diagnoseElement',()=>plugin.richText.normalize([rich[index]]));}
+          catch(e){failures.push({index,error:String(e)});}
+        }
+        monitor.setContext({...monitor.snapshot().context,richDiagnostic:describeRich(rich),elementFailures:failures});
+        throw error;
+      }
+    },
     setText: (rem:any,rich:RichTextInterface) => call('rem.setText',()=>rem.setText(rich)),
+    matchesExpected: async (rich:RichTextInterface,expected:string) => {const input=await compatibility.input(rich);return imageTransportHashMatches(await call('richText.normalize',()=>plugin.richText.normalize(input)),expected);},
     move: (rem:any,parent:string,index:number) => call('rem.setParent',()=>rem.setParent(parent,index)),
     disablePractice: (rem:any) => call('rem.setEnablePractice',()=>rem.setEnablePractice(false)),
     practiceEnabled: (rem:any) => call('rem.getEnablePractice',()=>rem.getEnablePractice()),
     isDocument: (rem:any) => call('rem.isDocument',()=>rem.isDocument()),
-    refs: (rem:any) => call('richText.getRemIdsFromRichText',()=>plugin.richText.getRemIdsFromRichText(rem.text ?? [])),
-    // findOne/findMany already returns fresh, ordered child IDs.
-    children: async (rem:any) => rem.children ?? [],
+    refs: async (rem:any) => {const rich=await compatibility.input(rem.text??[]);return call('richText.getRemIdsFromRichText',()=>plugin.richText.getRemIdsFromRichText(rich));},
+    // Snapshot children can lag after app reloads. Use the authoritative ordered
+    // SDK read for an audit, matching the application's actual tree.
+    children: async (rem:any) => (await call('rem.getChildrenRem',()=>rem.getChildrenRem())).map((child:any)=>child._id),
+    diagnoseMismatch: async (node:any,mapping:any,assets:any,rich:any,expected:string) => {
+      const original=await adapter.compile(node.text,mapping,assets,true),actual=await compatibility.input(rich);
+      const canonicalOriginal=await adapter.canonical(original),canonicalActual=await adapter.canonical(actual);
+      monitor.setContext({...monitor.snapshot().context,comparison:{expected,originalHash:await sha256(canonicalOriginal),actualHash:await sha256(canonicalActual),original:describeRich(original),actual:describeRich(actual)}});
+    },
   };
+  return adapter;
 }

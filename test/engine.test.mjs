@@ -114,9 +114,10 @@ test('resume validates existing IDs in bounded SDK batches instead of one read p
   const a=new MockAdapter(),p={schemaVersion:1,packageId:'batch.resume.canary',title:'Batch resume',nodes:Array.from({length:300},(_,i)=>({id:`n${i}`,parentId:null,document:false,text:[{kind:'text',value:`Item ${i}`}]}))};
   const r=await request(p);let pause=false;
   await runImport(a,p,r,{...options,batchSize:32,progress:x=>{if(x.created===301)pause=true;},shouldPause:()=>pause});
-  let batchCalls=0;const progress=[];
-  a.findMany=async ids=>{batchCalls++;return Promise.all(ids.map(id=>a.find(id)));};
+  const batchSizes=[],progress=[];
+  a.findMany=async ids=>{batchSizes.push(ids.length);return Promise.all(ids.map(id=>a.find(id)));};
   const result=await runImport(a,p,r,{...options,batchSize:32,progress:x=>progress.push(x)});
-  assert.equal(result.status,'complete');assert.equal(batchCalls,3);
+  assert.equal(result.status,'complete');assert.deepEqual(batchSizes.slice(0,3),[128,128,45]);
+  assert.equal(batchSizes.slice(3).reduce((a,b)=>a+b,0),301);assert.ok(batchSizes.slice(3).every(size=>size<=32));
   assert.equal(progress.filter(x=>x.phase==='resume-check').at(-1).checked,301);
 });

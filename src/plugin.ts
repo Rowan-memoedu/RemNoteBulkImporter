@@ -42,7 +42,7 @@ async function activate(plugin:ReactRNPlugin) {
           const id=crypto.randomUUID();mediaPending.set(id,{resolve,reject});send({type:'media-verify',id,jobId:m.jobId,assetId,url});
         });
         const execute=m.request.baseHash?restructureImport:runImport;
-        const result=await execute(sdkAdapter(plugin,m.request.kbId,monitor,verifyMedia),m.plan,m.request,{
+        const result=await execute(sdkAdapter(plugin,m.request.kbId,monitor,verifyMedia,m.plan.assets??{}),m.plan,m.request,{
           progress:(p:any)=>send({type:'progress',jobId:m.jobId,...p}),
           shouldPause:()=>pause||stopped||ws?.readyState!==WebSocket.OPEN,
           batchSize:16,yieldMs:30,

@@ -1,4 +1,6 @@
 import { inspectPackage, stableJSON, sha256 } from './package.mjs';
+import {boundedRead} from './bounded-read.mjs';
+import {ownedChildren} from './owned-children.mjs';
 
 const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
 const assert = (condition,message) => { if(!condition) throw new Error(message); };
@@ -39,7 +41,10 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
   };
   // Mapped Rems must still exist. Never silently recreate deleted user-edited material.
   const mapped=Object.entries(cp.mapping);
-  if(mapped.length && adapter.findMany){
+  if(cp.written>=nodes.length){
+    // No further Rem writes are needed. The full fresh audit below checks every
+    // mapped ID, avoiding a second existence scan before that same audit.
+  } else if(mapped.length && adapter.findMany){
     for(let start=0;start<mapped.length;start+=128){
       if(await guard())return {status:'paused',...info,rootRemId:cp.mapping.$root};
       const rows=mapped.slice(start,start+128);
@@ -98,25 +103,34 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
   cp.phase='verify';cp.verified=0;await adapter.save(info.hash,cp);emit();
   // Read fresh Rems after writes. Verify every node, not a sample or rendered markdown.
   const expectedChildren=new Map();
+  const ownedIds=new Set(Object.values(cp.mapping));cp.externalChildren={};
   for(const n of nodes.slice(1)) {
     const parent=parentFor(n);if(!expectedChildren.has(parent))expectedChildren.set(parent,[]);
     expectedChildren.get(parent).push(cp.mapping[n.id]);
   }
-  for(let i=0;i<nodes.length;i++) {
-    adapter.context?.({phase:'verify',index:i,nodeId:nodes[i].id});
-    if(i%batchSize===0 && await guard()) return {status:'paused',...info,rootRemId:cp.mapping.$root};
-    const n=nodes[i],rem=await adapter.find(cp.mapping[n.id]);assert(rem,`Readback missing ${n.id}`);
+  for(let start=0;start<nodes.length;start+=batchSize) {
+    if(await guard()) return {status:'paused',...info,rootRemId:cp.mapping.$root};
+    const rows=nodes.slice(start,start+batchSize);
+    const snapshots=adapter.findMany?await adapter.findMany(rows.map(n=>cp.mapping[n.id])):null;
+    const found=snapshots?new Map(snapshots.map(rem=>[rem._id,rem])):null;
+    await boundedRead(rows,async(n,offset)=>{
+    adapter.context?.({phase:'verify',index:start+offset,nodeId:n.id});
+    const rem=found?found.get(cp.mapping[n.id]):await adapter.find(cp.mapping[n.id]);assert(rem,`Readback missing ${n.id}`);
     assert(rem.parent===parentFor(n),`Readback parent mismatch ${n.id}`);
     assert(await adapter.isDocument(rem)===n.document,`Readback document mismatch ${n.id}`);
-    assert(await sha256(await adapter.canonical(rem.text ?? []))===cp.expected[n.id],`Readback RichText mismatch ${n.id}`);
+    const richMatches=adapter.matchesExpected?await adapter.matchesExpected(rem.text??[],cp.expected[n.id]):await sha256(await adapter.canonical(rem.text ?? []))===cp.expected[n.id];
+    if(!richMatches){adapter.context?.({phase:'verify',index:start+offset,nodeId:n.id});await adapter.diagnoseMismatch?.(n,cp.mapping,plan.assets??{},rem.text??[],cp.expected[n.id]);}
+    assert(richMatches,`Readback RichText mismatch ${n.id}`);
     assert(!await adapter.practiceEnabled(rem),`Unexpected practice card ${n.id}`);
     const actualRefs=await adapter.refs(rem),expectedRefs=n.text.filter(s=>s.kind==='ref').map(s=>cp.mapping[s.targetId]);
     assert(stableJSON([...new Set(actualRefs)].sort())===stableJSON([...new Set(expectedRefs)].sort()),`Readback reference targets mismatch ${n.id}`);
     const children=await adapter.children(rem);
-    assert(stableJSON(children)===stableJSON(expectedChildren.get(rem._id) ?? []),`Readback child order/count mismatch ${n.id}`);
-    cp.verified=i+1;
-    if((i+1)%batchSize===0){emit();await delay(yieldMs);}
+    const external=ownedChildren(children,expectedChildren.get(rem._id)??[],ownedIds,adapter.preserveExternalChildren);
+    assert(external!==null,`Readback child order/count mismatch ${n.id}`);
+    if(external.length)cp.externalChildren[rem._id]=external;
+    },4);
+    cp.verified=start+rows.length;emit();await delay(yieldMs);
   }
   cp.phase='complete';cp.inFlight=null;await adapter.save(info.hash,cp);emit();
-  return {status:'complete',...info,rootRemId:cp.mapping.$root,mapping:cp.mapping,verified:cp.verified,kbId};
+  return {status:'complete',...info,rootRemId:cp.mapping.$root,mapping:cp.mapping,verified:cp.verified,kbId,preservedExternalChildren:cp.externalChildren};
 }

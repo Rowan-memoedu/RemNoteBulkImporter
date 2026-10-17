@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {inspectPackage,stableJSON} from '../src/package.mjs';
 import {runImport} from '../src/engine.mjs';
 import {planStructureChange,restructureImport} from '../src/restructure.mjs';
+import {annotateDocuments,auditAnnotations} from '../src/annotations.mjs';
 const clone=x=>structuredClone(x),text=value=>[{kind:'text',value}];
 class MemoryAdapter {
   constructor(){this.rems=new Map();this.cps=new Map();this.sequence=0;}
@@ -60,6 +61,16 @@ test('edited imported body stops restructuring before any Rem creation or move',
   a.rems.get(original.mapping.body).text=['User edit'];
   await assert.rejects(restructureImport(a,next,revision),/text was edited/);assert.equal(a.rems.size,before);
 });
+test('structure migration adds annotation branches and two empty leaves under every document while retaining old IDs',async()=>{
+  const {a,next,revision,original}=await fixture(),annotated=annotateDocuments(next);
+  revision.packageHash=(await inspectPackage(annotated)).hash;
+  const result=await restructureImport(a,annotated,revision,{yieldMs:0});
+  assert.equal(result.status,'complete');assert.equal(result.mapping.a,original.mapping.a);
+  assert.equal(result.verified,annotated.nodes.length+1);assert.equal(auditAnnotations(annotated).emptyLeaves,10);
+  for(const n of annotated.nodes.filter(n=>n.text.length===1&&n.text[0].value==='')){
+    const live=a.rems.get(result.mapping[n.id]);assert.equal(live.document,false);assert.deepEqual(live.text,['']);assert.deepEqual(live.children,[]);
+  }
+});
 test('move committed before checkpoint failure resumes with same IDs and no duplicate documents',async()=>{
   const {a,next,revision,original}=await fixture(),save=a.save.bind(a);let failed=false;
   a.save=async(hash,cp)=>{if(hash===revision.packageHash&&cp.restructure?.moved===1&&!failed){failed=true;throw new Error('move checkpoint failure');}return save(hash,cp);};
@@ -72,4 +83,11 @@ test('structure plan cannot modify text, assets or referenced/non-leaf content',
   assert.throws(()=>planStructureChange(base,changed),/retained content/);
   const referenced=clone(base);referenced.nodes.find(n=>n.id==='pre').text=[{kind:'ref',targetId:'meta'}];
   assert.throws(()=>planStructureChange(referenced,next));
+});
+test('user-added portal remains under the same Topic while all owned children are audited',async()=>{
+  const {a,next,revision,original}=await fixture();a.preserveExternalChildren=true;
+  const portal=await a.createSentinel('User portal',original.mapping.a,false);
+  const result=await restructureImport(a,annotateDocuments(next),{...revision,packageHash:(await inspectPackage(annotateDocuments(next))).hash},{yieldMs:0});
+  assert.equal(result.status,'complete');assert.equal(a.rems.get(portal._id).parent,original.mapping.a);
+  assert.deepEqual(result.preservedExternalChildren[original.mapping.a],[portal._id]);
 });
