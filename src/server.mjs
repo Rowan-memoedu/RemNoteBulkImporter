@@ -45,6 +45,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     if(active)throw new Error(`Another import is active: ${active}`);
     if(identity?.version!==VERSION)throw new Error(`Reload the independent Bulk Importer plugin to ${VERSION} before resuming; existing checkpoint and nodes are retained`);
     const live=await rpc('status');if(live.busy)throw new Error('Plugin is busy finishing its previous task');
+    if(live.diagnostics?.restartRequired)throw new Error('Reload plugin after its SDK timeout before resuming');
     if(job.kbId && (job.kbId!==live.kbId || job.parentRemId!==parentRemId))throw new Error('Cannot resume in a different knowledge base or destination');
     const plan=JSON.parse(await readFile(job.planPath,'utf8'));if((await inspectPackage(plan)).hash!==jobId)throw new Error('Prepared package changed');
     job.kbId=live.kbId;job.parentRemId=parentRemId;job.status='starting';job.error=null;active=jobId;await persist(job);
@@ -106,7 +107,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     socket.on('message',raw=>{
       queued=queued.then(async()=>{
         const m=JSON.parse(raw.toString());
-        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
+        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0','0.1.1',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
         if(m.type==='reply'){
           const entry=pending.get(m.id);if(entry){clearTimeout(entry.timer);pending.delete(m.id);m.error?entry.reject(new Error(m.error)):entry.resolve(m.result);}return;
         }

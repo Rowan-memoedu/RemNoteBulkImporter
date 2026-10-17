@@ -8,6 +8,7 @@ Independent RemNote SDK plugin and loopback MCP service for source-neutral bulk 
 - `npm start` serves localhost plugin assets and MCP on 43106. `node src/cli.mjs status|prepare|start|job|pause` is a normal MCP client.
 - Plugin is installed and real canaries passed. Use live job receipts to determine production course state; never infer completion from a build or a prepared package.
 - Before writes confirm the live knowledge-base identity. Imported package hash, parent and library identity must match the saved checkpoint on resume.
+- Status includes current SDK call/node and timeout diagnostics. A timed-out mutation may finish late; reload the fenced plugin instance before resuming, never retry it concurrently.
 - Import only into a new owned subtree. Never delete existing Rems, alter old plugin/config files, fabricate answers or silently recreate edited/deleted imported material.
 - On pipeline failures revise the generic workflow and regenerate from original inputs. Preserve input snapshots and all valid render/readback receipts; do not patch candidate course content by hand.
 - Keep learner records, source archives, generated packages, images, imported Rem IDs, checkpoint stores and private source data out of Git. Human-facing course text must not carry operational IDs/hashes/paths.

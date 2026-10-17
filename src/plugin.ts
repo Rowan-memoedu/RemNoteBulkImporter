@@ -2,6 +2,7 @@ import { declareIndexPlugin, type ReactRNPlugin } from '@remnote/plugin-sdk';
 import { runImport } from './engine.mjs';
 import { sdkAdapter } from './sdk-adapter';
 import { VERSION } from './version.mjs';
+import { sdkMonitor } from './sdk-monitor.mjs';
 
 let ws: WebSocket|undefined;
 let timer: ReturnType<typeof setTimeout>|undefined;
@@ -11,6 +12,7 @@ const send = (msg:unknown) => { if(ws?.readyState===WebSocket.OPEN) ws.send(JSON
 
 async function activate(plugin:ReactRNPlugin) {
   stopped=false;
+  const monitor=sdkMonitor();
   await plugin.app.registerCommand({id:'bulk-import-status',name:'批量导入：查看连接状态',quickCode:'rbi',action:async()=>{
     await plugin.app.toast(busy?'批量导入正在运行':ws?.readyState===WebSocket.OPEN?'批量导入已连接本地服务':'批量导入未连接本地服务');
   }});
@@ -23,14 +25,15 @@ async function activate(plugin:ReactRNPlugin) {
       try { m=JSON.parse(event.data); } catch { return; }
       if(m.type==='pause'){pause=true;return;}
       if(m.type==='status'){
-        try {const kb=await plugin.kb.getCurrentKnowledgeBaseData();send({type:'reply',id:m.id,result:{kbId:kb._id,kbName:kb.name,busy}});}
+        try {const kb=await plugin.kb.getCurrentKnowledgeBaseData();send({type:'reply',id:m.id,result:{kbId:kb._id,kbName:kb.name,busy,diagnostics:monitor.snapshot()}});}
         catch(e){send({type:'reply',id:m.id,error:String(e)});}return;
       }
       if(m.type!=='import')return;
+      if(monitor.snapshot().restartRequired){send({type:'reply',id:m.id,error:'Reload the plugin after an SDK timeout before resuming'});return;}
       if(busy){send({type:'reply',id:m.id,error:'An import is already running in this plugin'});return;}
       busy=true;pause=false;send({type:'reply',id:m.id,result:{accepted:true}});
       try {
-        const result=await runImport(sdkAdapter(plugin,m.request.kbId),m.plan,m.request,{
+        const result=await runImport(sdkAdapter(plugin,m.request.kbId,monitor),m.plan,m.request,{
           progress:(p:any)=>send({type:'progress',jobId:m.jobId,...p}),
           shouldPause:()=>pause||stopped||ws?.readyState!==WebSocket.OPEN,
           batchSize:16,yieldMs:30,

@@ -77,11 +77,13 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     const start=cp.written,end=Math.min(nodes.length,start+batchSize),prepared=[];
     // Prepare RichText outside a transaction; include exact native reference targets.
     for(let i=start;i<end;i++) {
+      adapter.context?.({phase:'compile',index:i,nodeId:nodes[i].id});
       const n=nodes[i],rich=await adapter.compile(n.text,cp.mapping,plan.assets ?? {});
       prepared.push({node:n,rich,canonical:await adapter.canonical(rich)});
     }
     await adapter.transaction(async()=>{
       for(const {node:n,rich,canonical} of prepared) {
+        adapter.context?.({phase:'write',nodeId:n.id});
         const rem=await adapter.find(cp.mapping[n.id]);assert(rem,`Missing mapped node ${n.id}`);
         const actual=await adapter.canonical(rem.text ?? []),initial=await adapter.canonical([sentinel(n.id)]);
         assert(actual===initial || actual===canonical,`Imported text was edited (${n.id}); refusing overwrite`);
@@ -101,6 +103,7 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     expectedChildren.get(parent).push(cp.mapping[n.id]);
   }
   for(let i=0;i<nodes.length;i++) {
+    adapter.context?.({phase:'verify',index:i,nodeId:nodes[i].id});
     if(i%batchSize===0 && await guard()) return {status:'paused',...info,rootRemId:cp.mapping.$root};
     const n=nodes[i],rem=await adapter.find(cp.mapping[n.id]);assert(rem,`Readback missing ${n.id}`);
     assert(rem.parent===parentFor(n),`Readback parent mismatch ${n.id}`);

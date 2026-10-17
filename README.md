@@ -66,6 +66,8 @@ Small creation transactions use deterministic temporary sentinel titles. A commi
 
 Version 0.1.1 validates existing mapped IDs with SDK `findMany` in batches of 128. Checkpoints use append-only pages of 256 entries and commit compact metadata last. Only changed tail pages are rewritten. The original full checkpoint remains as the migration source; it is never deleted during recovery. Tests cover migration and a failed metadata commit. These changes reduce resume and checkpoint overhead; they do not establish the cause of an application restart.
 
+Version 0.1.2 exposes current SDK call, elapsed time and import-node context through status. Individual SDK calls have a 60-second limit; a whole small transaction has a 180-second limit. A timeout fences further import calls in that plugin instance until reload, because a pending mutation might still complete. It never retries a timed-out mutation automatically. Completion still requires the unchanged full readback audit.
+
 The installed plugin has passed real RemNote canaries for document flags, forward references, multiline text, native math and formatting, plus an embedded 116,856-byte PNG with exact RichText readback. Images use embedded data URLs; the old bridge's managed-local-media retrieval does not cover this representation. These tests do not establish cross-device/cloud image synchronization. Imported-source formatting and mathematical rendering require a separate source-conversion audit.
 
 ## Validation
