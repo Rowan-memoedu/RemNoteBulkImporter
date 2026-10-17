@@ -72,17 +72,24 @@ export async function restructureImport(adapter,plan,request,options={}){
     }
     state.preflight=true;await adapter.save(info.hash,cp);
   }
-  for(let i=state.added;i<changes.added.length;i++){
-    if(await guard())return paused();const n=changes.added[i],parent=mappedParent(n,cp.mapping),title=`RBI:${info.hash}:${n.id}`;
-    let rem=cp.mapping[n.id]?await adapter.find(cp.mapping[n.id]):await adapter.findSentinel(title,parent);
-    if(!rem)rem=await adapter.createSentinel(title,parent,n.document);
-    rem=await adapter.find(rem._id);
-    requireValue(rem&&rem.parent===parent&&await adapter.isDocument(rem)===n.document,'Added node identity mismatch');
-    cp.mapping[n.id]=rem._id;await adapter.save(info.hash,cp);
-    const rich=await adapter.compile(n.text,cp.mapping,plan.assets??{}),expected=await adapter.canonical(rich),actual=await adapter.canonical(rem.text??[]);
-    requireValue(actual===expected||actual===await adapter.canonical([title]),'New structure document was edited');
-    await adapter.setText(rem,rich);await adapter.disablePractice(rem);cp.expected[n.id]=await sha256(expected);
-    state.added=i+1;await adapter.save(info.hash,cp);emit('structure-documents',state.added,changes.added.length);
+  for(let start=state.added;start<changes.added.length;start+=16){
+    if(await guard())return paused();const rows=changes.added.slice(start,start+16);
+    await adapter.transaction(async()=>{for(const n of rows){
+      const parent=mappedParent(n,cp.mapping),title=`RBI:${info.hash}:${n.id}`;
+      let rem=cp.mapping[n.id]?await adapter.find(cp.mapping[n.id]):await adapter.findSentinel(title,parent);
+      if(!rem)rem=await adapter.createSentinel(title,parent,n.document);rem=await adapter.find(rem._id);
+      requireValue(rem&&rem.parent===parent&&await adapter.isDocument(rem)===n.document,'Added node identity mismatch');cp.mapping[n.id]=rem._id;
+    }});
+    // Mapping commits before final titles. A committed batch with failed storage
+    // is recovered by exact sentinel; partial text commits accept identical text.
+    await adapter.save(info.hash,cp);const prepared=[];
+    for(const n of rows){const rich=await adapter.compile(n.text,cp.mapping,plan.assets??{});prepared.push({n,rich,expected:await adapter.canonical(rich)});}
+    await adapter.transaction(async()=>{for(const {n,rich,expected} of prepared){
+      const rem=await adapter.find(cp.mapping[n.id]),parent=mappedParent(n,cp.mapping),title=`RBI:${info.hash}:${n.id}`;requireValue(rem?.parent===parent,'New structure node moved');
+      const actual=await adapter.canonical(rem.text??[]);requireValue(actual===expected||actual===await adapter.canonical([title]),'New structure node was edited');await adapter.setText(rem,rich);await adapter.disablePractice(rem);
+    }});
+    for(const {n,expected} of prepared)cp.expected[n.id]=await sha256(expected);
+    state.added=start+rows.length;await adapter.save(info.hash,cp);emit('structure-documents',state.added,changes.added.length);
   }
   if(changes.removed.length&&!state.archiveRemId){
     const title=`RBI:${info.hash}:recovery`,parent=state.archiveParentRemId;
@@ -106,18 +113,23 @@ export async function restructureImport(adapter,plan,request,options={}){
     const rem=await owned(base.mapping[n.id],base.expected[n.id],[mappedParent(n,base.mapping),state.archiveRemId]);
     await adapter.move(rem,state.archiveRemId,i);state.archived=i+1;await adapter.save(info.hash,cp);emit('structure-recovery',state.archived,changes.removed.length);
   }
-  const affected=new Set([cp.mapping.$root,...changes.added.map(n=>cp.mapping[n.id]),...changes.removed.map(n=>base.mapping[n.parentId]),...changes.moved.flatMap(n=>[mappedParent(n,cp.mapping),mappedParent(request.basePlan.nodes.find(x=>x.id===n.id),base.mapping)])]);
-  const parents=[...affected];
+  const sourceChildren=p=>{const index=new Map();for(const n of p.nodes){const parent=n.parentId??'$root';if(!index.has(parent))index.set(parent,[]);index.get(parent).push(n.id);}return index;};
+  const before=sourceChildren(request.basePlan),after=sourceChildren(plan);
+  const parents=[...new Set([...after.keys(),...before.keys()])].filter(id=>cp.mapping[id]&&stableJSON(before.get(id)??[])!==stableJSON(after.get(id)??[])).map(id=>cp.mapping[id]);
   const finalOwned=new Set(Object.values(cp.mapping));
   for(let i=state.ordered;i<parents.length;i++){
     if(await guard())return paused();const parent=parents[i],wanted=children.get(parent)??[],rem=await adapter.find(parent);requireValue(rem,'Structure parent missing');
     const actual=await adapter.children(rem),actualOwned=adapter.preserveExternalChildren?actual.filter(id=>finalOwned.has(id)):actual;
     requireValue(actualOwned.length===wanted.length&&actualOwned.every(id=>wanted.includes(id)),'Unexpected owned children during structure ordering');
     const target=adapter.preserveExternalChildren?preserveExternalSlots(actual,wanted,finalOwned):wanted;
+    const working=[...actual];
     if(stableJSON(actual)!==stableJSON(target))for(let position=0;position<target.length;position++){
       if(!finalOwned.has(target[position]))continue;
+      if(working[position]===target[position])continue;
       const child=await adapter.find(target[position]);requireValue(child?.parent===parent,'Structure child moved while ordering');await adapter.move(child,parent,position);
+      working.splice(working.indexOf(child._id),1);working.splice(position,0,child._id);
     }
+    requireValue(stableJSON(working)===stableJSON(target),'Structure ordering did not converge');
     state.ordered=i+1;await adapter.save(info.hash,cp);
   }
   state.complete=true;cp.created=plan.nodes.length+1;cp.written=cp.created;cp.phase='write';await adapter.save(info.hash,cp);

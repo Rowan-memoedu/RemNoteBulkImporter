@@ -118,6 +118,6 @@ test('resume validates existing IDs in bounded SDK batches instead of one read p
   a.findMany=async ids=>{batchSizes.push(ids.length);return Promise.all(ids.map(id=>a.find(id)));};
   const result=await runImport(a,p,r,{...options,batchSize:32,progress:x=>progress.push(x)});
   assert.equal(result.status,'complete');assert.deepEqual(batchSizes.slice(0,3),[128,128,45]);
-  assert.equal(batchSizes.slice(3).reduce((a,b)=>a+b,0),301);assert.ok(batchSizes.slice(3).every(size=>size<=32));
+  assert.equal(batchSizes.slice(3).reduce((a,b)=>a+b,0),301);assert.ok(batchSizes.slice(3).every(size=>size<=128));
   assert.equal(progress.filter(x=>x.phase==='resume-check').at(-1).checked,301);
 });

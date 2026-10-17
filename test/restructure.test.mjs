@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {inspectPackage,stableJSON} from '../src/package.mjs';
 import {runImport} from '../src/engine.mjs';
 import {planStructureChange,restructureImport} from '../src/restructure.mjs';
-import {annotateDocuments,auditAnnotations} from '../src/annotations.mjs';
+import {annotateDocuments,auditAnnotations,topAnnotationLayout,auditTopAnnotations} from '../src/annotations.mjs';
 const clone=x=>structuredClone(x),text=value=>[{kind:'text',value}];
 class MemoryAdapter {
   constructor(){this.rems=new Map();this.cps=new Map();this.sequence=0;}
@@ -90,4 +90,22 @@ test('user-added portal remains under the same Topic while all owned children ar
   const result=await restructureImport(a,annotateDocuments(next),{...revision,packageHash:(await inspectPackage(annotateDocuments(next))).hash},{yieldMs:0});
   assert.equal(result.status,'complete');assert.equal(a.rems.get(portal._id).parent,original.mapping.a);
   assert.deepEqual(result.preservedExternalChildren[original.mapping.a],[portal._id]);
+});
+test('order-only annotation changes and new content annotations migrate together without rewriting retained content',async()=>{
+  const {a,next,revision}=await fixture(),annotated=annotateDocuments(next),request={...revision,packageHash:(await inspectPackage(annotated)).hash};
+  const first=await restructureImport(a,annotated,request,{yieldMs:0}),top=topAnnotationLayout(annotated),topRequest={...request,packageHash:(await inspectPackage(top)).hash,baseHash:request.packageHash,basePlan:annotated};
+  const result=await restructureImport(a,top,topRequest,{yieldMs:0});assert.equal(result.status,'complete');auditTopAnnotations(top);
+  for(const n of annotated.nodes)assert.equal(result.mapping[n.id],first.mapping[n.id]);
+  for(const id of [null,'unit','module','a','b','pre','body']){
+    const expected=top.nodes.find(n=>n.parentId===id);if(!expected)continue;
+    const parent=id===null?result.rootRemId:result.mapping[id];assert.equal(a.rems.get(parent).children[0],result.mapping[expected.id]);
+  }
+});
+test('batched annotation creation recovers a committed batch after mapping checkpoint failure',async()=>{
+  const {a,next,revision}=await fixture(),top=topAnnotationLayout(annotateDocuments(next)),request={...revision,packageHash:(await inspectPackage(top)).hash},save=a.save.bind(a);let failed=false;
+  a.save=async(hash,cp)=>{if(hash===request.packageHash&&cp.restructure?.preflight&&cp.restructure.added===0&&Object.keys(cp.mapping).length>12&&!failed){failed=true;throw new Error('batch mapping checkpoint failure');}return save(hash,cp);};
+  await assert.rejects(restructureImport(a,top,request),/batch mapping/);const count=a.rems.size;
+  const result=await restructureImport(a,top,request,{yieldMs:0});assert.equal(result.status,'complete');assert.equal(result.verified,top.nodes.length+1);
+  assert.equal(a.rems.size,new Set(a.rems.keys()).size);for(const n of top.nodes)assert.ok(result.mapping[n.id]);
+  assert.ok(a.rems.size>=count);assert.equal(a.rems.size,Object.keys(result.mapping).length+3);assert.equal([...a.rems.values()].filter(n=>n.text[0]?.startsWith?.('RBI:')).length,0);
 });

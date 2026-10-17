@@ -108,9 +108,13 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     const parent=parentFor(n);if(!expectedChildren.has(parent))expectedChildren.set(parent,[]);
     expectedChildren.get(parent).push(cp.mapping[n.id]);
   }
-  for(let start=0;start<nodes.length;start+=batchSize) {
+  // Read batching is independent of the small mutation transaction limit.
+  // Hidden plugin frames can clamp per-batch yield timers; larger read batches
+  // avoid a fixed wait after every sixteen nodes without raising concurrency.
+  const readBatchSize=128;
+  for(let start=0;start<nodes.length;start+=readBatchSize) {
     if(await guard()) return {status:'paused',...info,rootRemId:cp.mapping.$root};
-    const rows=nodes.slice(start,start+batchSize);
+    const rows=nodes.slice(start,start+readBatchSize);
     const snapshots=adapter.findMany?await adapter.findMany(rows.map(n=>cp.mapping[n.id])):null;
     const found=snapshots?new Map(snapshots.map(rem=>[rem._id,rem])):null;
     await boundedRead(rows,async(n,offset)=>{
