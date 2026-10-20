@@ -89,6 +89,8 @@ Version 0.1.9 creates added plain-text nodes in batches of 16 with separate dura
 
 Version 0.1.10 registers each newly uploaded native image with the readback projection immediately. A cold import can encounter its first image before later assets have been uploaded; a one-time cache scan must not permanently exclude those later assets. Registration retains the original parser object and still requires byte verification, exact source membership and unchanged geometry rules. `scripts/fresh-images-canary.mjs <artifact-package.json>` creates two fresh images separated by a mutation batch plus literal multiline code for a real SDK regression check.
 
+Version 0.1.11 checks SDK-created mailto Link-Rem targets by compiling the exact immutable Markdown segment through the SDK and comparing every resulting reference ID. It does not discard unexpected references or change source packages, imported text or checkpoint hashes. A fully written job that stopped at reference verification resumes its original mapping and reruns verification without creating or rewriting notes. The plugin must actually load 0.1.11 before this repair can be accepted on a live job.
+
 ## Validation
 
 `npm test`, `npm run typecheck`, and `node node_modules/@remnote/plugin-sdk/scripts/index.js validate`.

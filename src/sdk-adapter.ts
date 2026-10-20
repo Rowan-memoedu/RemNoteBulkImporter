@@ -6,6 +6,7 @@ import { nativeImage } from './native-image.mjs';
 import { describeRich } from './rich-diagnostic.mjs';
 import { imageReadbackCompatibility } from './rich-compat.mjs';
 import { imageTransportHashMatches } from './rich-hash.mjs';
+import { expectedReferenceTargets } from './expected-refs.mjs';
 
 export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, verifyMedia: any, packageAssets: any={}) {
   const call=monitor.call;
@@ -86,6 +87,10 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
     practiceEnabled: (rem:any) => call('rem.getEnablePractice',()=>rem.getEnablePractice()),
     isDocument: (rem:any) => call('rem.isDocument',()=>rem.isDocument()),
     refs: async (rem:any) => {const rich=await compatibility.input(rem.text??[]);return call('richText.getRemIdsFromRichText',()=>plugin.richText.getRemIdsFromRichText(rich));},
+    expectedRefs: async (node:any,mapping:Record<string,string>) => expectedReferenceTargets(node,mapping,{
+      parse:(markdown:string)=>call('richText.parseExpectedMailto',()=>plugin.richText.parseFromMarkdown(markdown)),
+      refs:(rich:RichTextInterface)=>call('richText.expectedMailtoTargets',()=>plugin.richText.getRemIdsFromRichText(rich)),
+    }),
     // Snapshot children can lag after app reloads. Use the authoritative ordered
     // SDK read for an audit, matching the application's actual tree.
     children: async (rem:any) => (await call('rem.getChildrenRem',()=>rem.getChildrenRem())).map((child:any)=>child._id),

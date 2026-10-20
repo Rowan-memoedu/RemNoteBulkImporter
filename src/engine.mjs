@@ -126,7 +126,7 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     if(!richMatches){adapter.context?.({phase:'verify',index:start+offset,nodeId:n.id});await adapter.diagnoseMismatch?.(n,cp.mapping,plan.assets??{},rem.text??[],cp.expected[n.id]);}
     assert(richMatches,`Readback RichText mismatch ${n.id}`);
     assert(!await adapter.practiceEnabled(rem),`Unexpected practice card ${n.id}`);
-    const actualRefs=await adapter.refs(rem),expectedRefs=n.text.filter(s=>s.kind==='ref').map(s=>cp.mapping[s.targetId]);
+    const actualRefs=await adapter.refs(rem),expectedRefs=adapter.expectedRefs?await adapter.expectedRefs(n,cp.mapping):n.text.filter(s=>s.kind==='ref').map(s=>cp.mapping[s.targetId]);
     assert(stableJSON([...new Set(actualRefs)].sort())===stableJSON([...new Set(expectedRefs)].sort()),`Readback reference targets mismatch ${n.id}`);
     const children=await adapter.children(rem);
     const external=ownedChildren(children,expectedChildren.get(rem._id)??[],ownedIds,adapter.preserveExternalChildren);

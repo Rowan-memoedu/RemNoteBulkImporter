@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {inspectPackage,stableJSON,sha256} from '../src/package.mjs';
 import {runImport} from '../src/engine.mjs';
+import {expectedReferenceTargets} from '../src/expected-refs.mjs';
 
 const clone=value=>structuredClone(value);
 const fixture=()=>({schemaVersion:1,packageId:'canary.forward',title:'独立导入测试',nodes:[
@@ -34,6 +35,22 @@ class MockAdapter {
 }
 const request=async p=>({packageHash:(await inspectPackage(p)).hash,kbId:'kb-A',parentRemId:null});
 const options={batchSize:2,yieldMs:0};
+
+test('SDK mailto reference checks resume the same completed writes and reject other targets',async()=>{
+  const a=new MockAdapter(),p={schemaVersion:1,packageId:'mailto.fixture',title:'Mailto fixture',nodes:[
+    {id:'contact',parentId:null,document:false,text:[{kind:'markdown',value:'[Contact](mailto:fixture@example.org)'}]},
+  ]};
+  const baseCompile=a.compile.bind(a);
+  a.compile=async(segments,mapping,assets)=>segments.some(s=>s.kind==='markdown')?[{ref:'sdk-mailto'}]:baseCompile(segments,mapping,assets);
+  a.expectedRefs=(node,mapping)=>expectedReferenceTargets(node,mapping,{parse:async()=>[{ref:'sdk-mailto'}],refs:async rich=>rich.map(x=>x.ref)});
+  const r=await request(p),first=await runImport(a,p,r,options),created=a.creates;
+  assert.equal(first.status,'complete');
+  assert.equal((await runImport(a,p,r,options)).status,'complete');
+  assert.equal(a.creates,created);
+  const baseRefs=a.refs.bind(a);
+  a.refs=async rem=>rem._id===first.mapping.contact?['other-target']:baseRefs(rem);
+  await assert.rejects(runImport(a,p,r,options),/reference targets mismatch/);
+});
 
 test('creates real document hierarchy, forward references and exact sibling order; repeat creates nothing',async()=>{
   const a=new MockAdapter(),p=fixture(),r=await request(p),result=await runImport(a,p,r,options);
