@@ -9,7 +9,7 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
 import {createService} from '../src/server.mjs';
 import {VERSION} from '../src/version.mjs';
 
-test('older loaded plugin can report status but cannot receive a new or resumed import',async()=>{
+for(const previousVersion of ['0.1.0','0.1.9','0.1.10'])test(`older loaded plugin ${previousVersion} can report status but cannot receive a new or resumed import`,async()=>{
   const root=await mkdtemp('D:/Artifacts/RemNoteBulkImporter-test-'),imports=path.join(root,'packages');
   await mkdir(imports);
   const file=path.join(imports,'canary.json');
@@ -28,9 +28,9 @@ test('older loaded plugin can report status but cannot receive a new or resumed 
       if(m.type==='import')importsReceived++;
       if(m.type==='status')socket.send(JSON.stringify({type:'reply',id:m.id,result:{kbId:'fixture-kb',busy:false}}));
     });
-    socket.send(JSON.stringify({type:'hello',pluginId:'remnote-bulk-importer',version:'0.1.0'}));
+    socket.send(JSON.stringify({type:'hello',pluginId:'remnote-bulk-importer',version:previousVersion}));
     const status=(await client.callTool({name:'bulk_import_status',arguments:{}})).structuredContent;
-    assert.equal(status.plugin.version,'0.1.0');
+    assert.equal(status.plugin.version,previousVersion);
     const rejected=await client.callTool({name:'bulk_import_start',arguments:{jobId:job.jobId}});
     assert.equal(rejected.isError,true);assert.match(rejected.content[0].text,/Reload/);
     assert.equal(importsReceived,0);
