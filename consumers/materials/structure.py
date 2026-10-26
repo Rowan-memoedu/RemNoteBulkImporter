@@ -60,6 +60,16 @@ def join_directory_titles(entries,atoms):
     """Rejoin a split chapter label/translation only with exact body evidence."""
     headings={key(visible(a)) for a in atoms if a['kind'] in ('text','html') and len(visible(a))<=260}
     marker=re.compile(r'^(?:chapter|part|book|unit|appendix)\s|^第.{1,8}[章篇部卷]',re.I)
+    bare=re.compile(r'^(?:(?:chapter|part|book|unit|appendix)\s*[0-9ivxlcdm]+|第[0-9一二三四五六七八九十百]+[章篇部卷])$',re.I)
+    # A large chapter label and its translated title may occupy adjacent OCR
+    # blocks. Require same-page, same-level heading evidence, beginning with a
+    # bare chapter number; ordinary paragraphs and later chapters cannot join.
+    for index,a in enumerate(atoms):
+        if not bare.fullmatch(visible(a).strip()) or not a.get('heading_level'):continue
+        pieces=[visible(a)]
+        for b in atoms[index+1:index+4]:
+            if b['kind'] not in ('text','html') or b.get('page')!=a.get('page') or b.get('heading_level')!=a['heading_level'] or marker.search(visible(b)) or len(visible(b))>180:break
+            pieces.append(visible(b));headings.add(key(' '.join(pieces)))
     output=[];joins=[];i=0
     while i<len(entries):
         count=1;entry=entries[i]
@@ -74,6 +84,25 @@ def join_directory_titles(entries,atoms):
                     joins.append({'source_entries':part,'joined_title':joined});break
         output.append(entry);i+=count
     return output,joins
+
+
+def coalesce_split_directory_documents(structure):
+    """Apply the same title rule to a frozen structure without rerunning its body."""
+    atoms=structure['atoms'];before=structure['documents']
+    merged,joins=join_directory_titles(before,atoms)
+    replacements={};changes=[]
+    for item in joins:
+        source=item['source_entries'];first=source[0];last=source[-1]
+        target=next(d for d in merged if d['id']==first['id'])
+        target['end']=last['end']
+        target['title_atom']=atoms[target['start']]['id'] if target['start']<target['end'] and key(visible(atoms[target['start']]))==key(target['title']) else None
+        for old in source[1:]:replacements[old['id']]=target['id']
+        for a in atoms[target['start']:target['end']]:a['doc']=target['id']
+        changes.append({'kept':first['id'],'removed':[d['id'] for d in source[1:]],'title':target['title']})
+    for d in merged:d['parent']=replacements.get(d['parent'],d['parent'])
+    structure['documents']=merged
+    validate_groups(structure.get('groups',[]),atoms,set(range(len(atoms))))
+    return changes
 
 
 def validate_entries(result):

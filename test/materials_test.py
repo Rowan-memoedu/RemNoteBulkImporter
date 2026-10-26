@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'consumers'))
 from materials.extract import atoms_from_ocr, split_pdf, inline_media
-from materials.structure import contents_pages, valid_bookmarks, validate_groups, join_directory_titles, long_document_scopes, outline, concise_front_titles, refine_title_boundaries
+from materials.structure import contents_pages, valid_bookmarks, validate_groups, join_directory_titles, long_document_scopes, outline, concise_front_titles, refine_title_boundaries, coalesce_split_directory_documents
 from materials.local_formats import markdown_atoms, html_atoms
 from materials.render import Assets, segments, native_table
 
@@ -68,6 +68,27 @@ class MaterialTests(unittest.TestCase):
         concise_front_titles(docs,atoms,Producer())
         self.assertEqual(docs[0]['title'],'书名页');self.assertEqual(docs[1]['title'],'Chapter 1 Stars')
         self.assertEqual(atoms[0]['text'],'Astronomy third edition by Author')
+
+    def test_multiblock_heading_evidence_does_not_cross_body_or_pages(self):
+        entries=[{'title':t,'level':1,'printed_page':9} for t in ('CHAPTER IV','Stars','恒星')]
+        atoms=[{'kind':'text','text':t,'heading_level':1,'page':6} for t in ('CHAPTER IV','Stars 恒星')]
+        joined,_=join_directory_titles(entries,atoms);self.assertEqual(len(joined),1)
+        separate,_=join_directory_titles(entries,[atoms[0],{'kind':'text','text':'An actual paragraph','page':6,'heading_level':0},atoms[1]])
+        self.assertEqual(len(separate),3)
+        atoms[1]['page']=7;separate,_=join_directory_titles(entries,atoms);self.assertEqual(len(separate),3)
+
+    def test_frozen_structure_coalescing_preserves_body_and_reparents_children(self):
+        atoms=[{'id':f'a{i:06d}','kind':'text','text':t,'heading_level':1 if i<2 else 0,'page':6,'doc':'d0' if i==0 else 'd2' if i<3 else 'd3'}
+               for i,t in enumerate(('CHAPTER IV','Stars 恒星','Chapter objectives','Main sequence','Hydrogen fusion'))]
+        docs=[{'id':f'd{i}','title':t,'level':1 if i<3 else 2,'printed_page':9,'parent':None if i<3 else 'd2','start':start,'end':end,'title_atom':f'a{start:06d}' if i in (0,3) else None}
+              for i,(t,start,end) in enumerate([('CHAPTER IV',0,1),('Stars',1,1),('恒星',1,3),('Main sequence',3,5)])]
+        original=copy.deepcopy(atoms);s={'atoms':atoms,'documents':docs,'groups':[{'parent':3,'through':4}]}
+        changes=coalesce_split_directory_documents(s)
+        self.assertEqual(changes[0]['removed'],['d1','d2']);self.assertEqual(len(s['documents']),2)
+        self.assertEqual(s['documents'][0]['end'],3);self.assertIsNone(s['documents'][0]['title_atom'])
+        self.assertEqual(s['documents'][1]['parent'],'d0')
+        self.assertEqual([{k:v for k,v in a.items() if k!='doc'} for a in atoms],[{k:v for k,v in a.items() if k!='doc'} for a in original])
+        self.assertEqual(coalesce_split_directory_documents(s),[])
 
     def test_split_chapter_prefix_moves_with_its_title(self):
         atoms=[{'id':f'a{i:06d}','kind':'text','text':text,'page':2,'doc':'first' if i<2 else 'next'}
