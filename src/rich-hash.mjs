@@ -15,6 +15,11 @@ export async function imageTransportHashMatches(normalized,expected){
       else {delete candidate[index].width;delete candidate[index].height;}
     });
     if(await sha256(stableJSON(candidate))===expected)return true;
+    // The native parser may also return an own undefined percent field. JSON
+    // removes it, just as it removes undefined width/height. A defined percentage
+    // is never changed, and the stored original hash is still mandatory.
+    const optional=candidate.map(p=>p?.i==='i'&&p.percent===undefined?{...p,percent:undefined}:p);
+    if(await sha256(stableJSON(optional))===expected)return true;
   }
   return false;
 }

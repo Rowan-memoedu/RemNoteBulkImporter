@@ -81,7 +81,21 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
       }
     },
     setText: (rem:any,rich:RichTextInterface) => call('rem.setText',()=>rem.setText(rich)),
-    matchesExpected: async (rich:RichTextInterface,expected:string) => {const input=await compatibility.input(rich);return imageTransportHashMatches(await call('richText.normalize',()=>plugin.richText.normalize(input)),expected);},
+    matchesExpected: async (rich:RichTextInterface,expected:string) => {
+      const input=await compatibility.input(rich);
+      const normalized=await call('richText.normalize',()=>plugin.richText.normalize(input));
+      if(await imageTransportHashMatches(normalized,expected))return true;
+      for(const candidate of await compatibility.automaticGeometryVariants(rich)){
+        // Native percent=0 is not accepted by every SDK schema. It is a read-only
+        // candidate, so skip only that explicit argument-validation rejection.
+        let value;
+        try{value=await call('richText.normalize',()=>plugin.richText.normalize(candidate));}
+        catch(error){if(String(error).includes('Invalid Method Arguments')&&String(error).includes('richText.normalize'))continue;throw error;}
+        if(await imageTransportHashMatches(value,expected))return true;
+      }
+      monitor.setContext({...monitor.snapshot().context,richReadback:{compatibility:'natural-geometry-variants-2',expected,normalizedHash:await sha256(stableJSON(normalized)),actual:describeRich(input),normalized:describeRich(normalized)}});
+      return false;
+    },
     move: (rem:any,parent:string,index:number) => call('rem.setParent',()=>rem.setParent(parent,index)),
     disablePractice: (rem:any) => call('rem.setEnablePractice',()=>rem.setEnablePractice(false)),
     practiceEnabled: (rem:any) => call('rem.getEnablePractice',()=>rem.getEnablePractice()),

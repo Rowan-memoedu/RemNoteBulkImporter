@@ -16,3 +16,10 @@ test('formulas and references stay exact and live input is never modified',async
   assert.equal(await imageTransportHashMatches(actual,hash),true);assert.deepEqual(actual,before);
   actual[0].text='x^3';assert.equal(await imageTransportHashMatches(actual,hash),false);
 });
+
+test('an own undefined percent key can survive JSON omission but a defined value cannot change',async()=>{
+  const original=[{i:'i',url:'z',title:'Source',width:undefined,height:undefined,percent:undefined}];
+  const transported=JSON.parse(JSON.stringify(original)),hash=await sha256(stableJSON(original));
+  assert.equal(await imageTransportHashMatches(transported,hash),true);
+  assert.equal(await imageTransportHashMatches([{...transported[0],percent:50}],hash),false);
+});

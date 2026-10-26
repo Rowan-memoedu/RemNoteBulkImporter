@@ -56,5 +56,25 @@ export function imageReadbackCompatibility(assets,{loadCached,verify}){
     }
     return result;
   }
-  return {input,register};
+  async function automaticGeometryVariants(rich){
+    // The native parser's cached object may itself gain natural dimensions after
+    // first display. Only offer byte-verified automatic states, and let the
+    // caller compare every candidate against the ORIGINAL checkpoint hash.
+    const eligible=new Set();
+    for(let i=0;i<rich.length;i++){
+      const part=rich[i];if(part?.i!=='i'||part.percent!==0||part.width===undefined||part.height===undefined)continue;
+      const {asset}=await source(part.url);
+      if(!dimensions.has(asset.sha256))dimensions.set(asset.sha256,await naturalDimensions(asset));
+      const natural=dimensions.get(asset.sha256);
+      if(part.width===natural.width&&part.height===natural.height)eligible.add(i);
+    }
+    if(!eligible.size)return [];
+    return ['dimensions','both','percent'].map(mode=>rich.map((part,i)=>{
+      if(!eligible.has(i))return part;const projected={...part};
+      if(mode!=='percent'){delete projected.width;delete projected.height;}
+      if(mode!=='dimensions')delete projected.percent;
+      return projected;
+    }));
+  }
+  return {input,register,automaticGeometryVariants};
 }

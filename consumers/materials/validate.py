@@ -1,0 +1,89 @@
+"""Independent source-to-native validation, separate from content production."""
+import base64
+import json
+import re
+import subprocess
+from pathlib import Path
+
+from bs4 import BeautifulSoup
+from markdown_it import MarkdownIt
+
+from .common import REPO, file_sha, load, require, save, sha
+from .structure import validate_groups
+
+
+def inspect_package(path):
+    code="import{readFile}from'node:fs/promises';import{inspectPackage}from'./src/package.mjs';console.log(JSON.stringify(await inspectPackage(JSON.parse(await readFile(process.argv[1],'utf8')))));"
+    result=subprocess.run(['node','--input-type=module','-e',code,str(path)],cwd=REPO,capture_output=True,text=True,encoding='utf-8',timeout=120)
+    require(result.returncode==0,'Package contract failed: '+result.stderr[-1200:])
+    return json.loads(result.stdout)
+
+
+def validate_body_parent(atom,index,groups,native,documents,mapping):
+    if native['id'] in documents:return
+    ancestors=[g['parent'] for g in groups if g['parent']<index<=g['through']]
+    expected=mapping[f'a{max(ancestors):06d}'] if ancestors else atom['doc']
+    require(native['parentId']==expected,'Body outline parent changed: '+atom['id'])
+
+
+def validate(folder):
+    extraction=load(folder/'extraction.json');structure=load(folder/'structure.json');bundle=load(folder/'package.json')
+    require(file_sha(extraction['source'])==extraction['source_sha256'],'Original source changed')
+    if extraction.get('raw_ocr_sha256'):
+        require(file_sha(folder/'ocr-blocks.json')==extraction['raw_ocr_sha256'],'Raw OCR evidence changed')
+    original={a['id']:a for a in extraction['atoms']};atoms=structure['atoms']
+    require(len(atoms)==len(original),'Source atom count changed')
+    for a in atoms:
+        require({k:v for k,v in a.items() if k!='doc'}==original[a['id']],f'Source atom changed {a["id"]}')
+    validate_groups(structure['groups'],atoms,set(range(len(atoms))))
+    mapping=bundle['provenance']['atomToNode'];nodes={n['id']:n for n in bundle['nodes']};runs=load(folder/'rich-atoms.json')
+    require(set(mapping)==set(original),'Unmapped or invented source atom')
+    require(len(set(mapping.values()))==len(mapping),'Source atoms merged')
+    documents={d['id']:d for d in structure['documents']}
+    parser=MarkdownIt('commonmark',{'html':True}).enable('strikethrough')
+    normal=lambda x:re.sub(r'\s+','',x)
+    formulas=0
+    for index,a in enumerate(atoms):
+        native=nodes[mapping[a['id']]]
+        validate_body_parent(a,index,structure['groups'],native,documents,mapping)
+        require(native['text']==runs[a['id']],'Built native text differs from frozen conversion')
+        if a['kind'] in ('text','equation') and not re.search(r'!\[',a['text']):
+            from .render import math_split
+            expected=''
+            for kind,value,_ in math_split(a['text'],strict=a['kind']=='equation') if not a.get('literal') else [('text',a['text'],False)]:
+                expected+=value if kind=='latex' or a.get('literal') else BeautifulSoup(parser.renderInline(value),'html.parser').get_text()
+            actual=''.join(BeautifulSoup(parser.renderInline(s['value']),'html.parser').get_text() if s['kind']=='markdown' else s.get('value','') for s in native['text'])
+            require(normal(expected)==normal(actual),f'Source text/formula changed: {a["id"]}')
+        elif a['kind']=='html':
+            from .render import protect_html_math
+            source_html=protect_html_math(a['text'])
+            for math_node in source_html.select('.math-tex'):
+                value=math_node.get_text();math_node.replace_with(value[2:-2])
+            expected=source_html.get_text()
+            actual=''.join(BeautifulSoup(parser.renderInline(s['value']),'html.parser').get_text() if s['kind']=='markdown' else s.get('value','') for s in native['text'])
+            require(normal(expected)==normal(actual),'HTML visible text changed: '+a['id'])
+        elif a['kind']=='code':require(native['text']==[{'kind':'code','value':a['text']}],'Code bytes changed')
+        elif a['kind']=='image':require(file_sha(a['path'])==a['sha256'],'Source image changed')
+        formulas+=sum(s['kind']=='latex' for s in native['text'])
+        require(native['document']==(native['id'] in documents),'Unexpected body Document')
+    for d in structure['documents']:
+        require(nodes[d['id']]['parentId']==d['parent'] and nodes[d['id']]['document'],'Directory hierarchy changed')
+        # A source heading may become the Document title while a separately OCR'd
+        # chapter-number prefix remains its first body node. Body order is exact;
+        # the absorbed heading is checked independently by the atom mapping above.
+        sequence=[mapping[a['id']] for a in atoms[d['start']:d['end']] if mapping[a['id']]!=d['id']]
+        actual=[n['id'] for n in bundle['nodes'] if n['id'] in set(sequence)]
+        require(actual==sequence,'Source ordering changed')
+    for asset in bundle['assets'].values():require(sha(base64.b64decode(asset['base64'],validate=True))==asset['sha256'],'Asset digest mismatch')
+    info=inspect_package(folder/'package.json')
+    result=subprocess.run(['node',str(REPO/'consumers/audit-math.mjs'),str(folder/'package.json'),str(folder/'math-validation.json')],capture_output=True,text=True,encoding='utf-8',timeout=120)
+    require(result.returncode==0,'Math validation process failed')
+    math=load(folder/'math-validation.json')
+    require(math['errors']==0,f'Native formulas failed KaTeX: {math["errors"]}; see math-validation.json')
+    for target in load(folder/'markdown-map.json').values():require(Path(target).is_file(),'Missing Markdown document')
+    report={'status':'VALIDATED','source_sha256':extraction['source_sha256'],'package_sha256':file_sha(folder/'package.json'),
+            'source_atoms':len(atoms),'source_fields':extraction['coverage'].get('fields'),
+            'directory_documents':len(documents),'leaf_documents':sum(not any(x['parent']==d for x in documents.values()) for d in documents),
+            'native_formulas':math['count'],'all_source_atoms_mapped':True,'info':info}
+    save(folder/'validation.json',report)
+    return report
