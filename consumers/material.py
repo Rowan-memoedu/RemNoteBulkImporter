@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--title')
     parser.add_argument('--model')
     parser.add_argument('--kb-id')
+    parser.add_argument('--parent-rem-id')
     args=parser.parse_args()
     if args.phase=='status':
         from materials.delivery import mcp

@@ -15,7 +15,7 @@ def mcp(command,*args):
     return json.loads(result.stdout)
 
 
-def deliver(folder,kb_id):
+def deliver(folder,kb_id,parent_rem_id=None):
     require(kb_id,'import requires --kb-id; never infer the destination from the open window')
     report=validate(folder);info=report['info'];source=report['source_sha256']
     STATE.mkdir(parents=True,exist_ok=True)
@@ -24,12 +24,13 @@ def deliver(folder,kb_id):
     require(live.get('connected') and live.get('kbId')==kb_id,'Target RemNote knowledge base is disconnected or different')
     # Atomic filesystem claim protects two independent CLI invocations before
     # either reaches the service's single-writer guard. Existing claim is resumed.
-    claim={'sourceSha256':source,'kbId':kb_id,'packageHash':info['hash'],'folder':str(folder)}
+    claim={'sourceSha256':source,'kbId':kb_id,'parentRemId':parent_rem_id,'packageHash':info['hash'],'folder':str(folder)}
     try:
         with registry.open('x',encoding='utf-8') as stream:json.dump(claim,stream,ensure_ascii=False)
     except FileExistsError:
         previous=load(registry)
         require(previous['packageHash']==info['hash'],'This source already has a different import package in this library; inspect the existing receipt instead of duplicating it')
+        require(previous.get('parentRemId')==parent_rem_id,'This source already targets a different parent; inspect its existing placement instead of duplicating or moving it')
         if previous.get('status')=='complete':
             print(json.dumps({**previous,'status':'already_imported'},ensure_ascii=False));return previous
     active=live.get('activeJob')
@@ -41,12 +42,14 @@ def deliver(folder,kb_id):
     else:target.write_bytes(data)
     job=mcp('prepare',target)
     require(job['jobId']==info['hash'],'Prepared package identity mismatch')
+    if job.get('kbId'):
+        require(job['kbId']==kb_id and job.get('parentRemId')==parent_rem_id,'Existing job destination differs from the requested library or parent')
     save(folder/'import-request.json',{**claim,'jobId':job['jobId'],'packagePath':str(target)})
     if job['status'] not in ('complete','running','starting'):
         live=mcp('status')
         require(live.get('connected') and live.get('kbId')==kb_id,'Destination changed before start')
         require(not live.get('busy') and not live.get('activeJob'),'Writer became busy before start')
-        job=mcp('start',job['jobId'])
+        job=mcp('start',job['jobId'],*([parent_rem_id] if parent_rem_id else []))
     last=None
     while job['status'] in ('starting','running'):
         if job.get('progress')!=last:
@@ -54,6 +57,7 @@ def deliver(folder,kb_id):
         time.sleep(10);job=mcp('job',job['jobId'])
     save(folder/'import-receipt.json',job)
     require(job['status']=='complete','Import not complete; resume with the same source and output after resolving the recorded error')
+    require(job.get('parentRemId')==parent_rem_id,'Completed import parent differs from the request')
     native=load(Path('D:/AppData/RemNoteBulkImporter')/(job['jobId']+'.result.json'))
     require(native['kbId']==kb_id and native['hash']==job['jobId'],'Readback identity mismatch')
     require(native['verified']==info['nodes']+1 and job['verifiedManagedAssets']==info['assets'],'Incomplete node/media readback')

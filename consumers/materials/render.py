@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
 
 from .common import HYPER, REPO, file_sha, key, load, require, save, sha
+from .source_images import math_audit, source_representation, image_aliases
 
 sys.path.insert(0,str(HYPER))
 from outline import rich, preview_html, validate_svg
@@ -209,29 +210,43 @@ def native_table(source,assets,base):
     return result,spans
 
 
+def prepare_inline_assets(atom,assets,base):
+    assets.aliases={}
+    for original,record in atom.get('inline_media',{}).items():
+        require(file_sha(record['path'])==record['sha256'],'Inline OCR image changed')
+        assets.allowed_roots.add(Path(record['path']).resolve().parent)
+        assets.aliases[(Path(base)/unquote(urlsplit(original).path)).resolve()]=Path(record['path'])
+
+
 def build(extraction,structure,folder,title):
-    atoms=structure['atoms'];assets=Assets(folder);runs={};table_spans=[]
+    atoms=structure['atoms'];assets=Assets(folder);runs={};table_spans=[];fallbacks=[]
     title_nodes={d['title_atom']:d['id'] for d in structure['documents'] if d['title_atom']}
     for a in atoms:
         for anchor in a.get('anchors',[]):
             require(anchor not in assets.anchors,'Duplicate source anchor '+anchor)
             assets.anchors[anchor]=title_nodes.get(a['id'],a['id'])
-    for a in atoms:
+    for index,a in enumerate(atoms):
         base=a.get('base',str(Path(extraction['source']).parent))
-        assets.aliases={}
-        for original,record in a.get('inline_media',{}).items():
-            require(file_sha(record['path'])==record['sha256'],'Inline OCR image changed')
-            assets.allowed_roots.add(Path(record['path']).resolve().parent)
-            assets.aliases[(Path(base)/unquote(urlsplit(original).path)).resolve()]=Path(record['path'])
-        if a['kind']=='image':
-            require(file_sha(a['path'])==a['sha256'],'Source image changed')
-            value=[{'kind':'image','assetId':assets.add_file(a['path'])}]
-        elif a['kind']=='code':value=[{'kind':'code','value':a['text']}]
-        elif a['kind']=='table':
-            value,spans=native_table(a['text'],assets,base)
-            if spans:table_spans.append(a['id'])
-        else:value=segments(a['text'],assets,base,raw_html=a['kind']=='html',literal=a.get('literal',False),equation=a['kind']=='equation')
+        prepare_inline_assets(a,assets,base)
+        try:
+            if a['kind']=='image':
+                require(file_sha(a['path'])==a['sha256'],'Source image changed')
+                value=[{'kind':'image','assetId':assets.add_file(a['path'])}]
+            elif a['kind']=='code':value=[{'kind':'code','value':a['text']}]
+            elif a['kind']=='table':
+                value,spans=native_table(a['text'],assets,base)
+                if spans:table_spans.append(a['id'])
+            else:value=segments(a['text'],assets,base,raw_html=a['kind']=='html',literal=a.get('literal',False),equation=a['kind']=='equation')
+        except ValueError as error:
+            if str(error)!='Unclosed mathematical delimiter':raise
+            value,record=source_representation(extraction,structure,index,folder,assets,str(error));fallbacks.append(record)
         runs[a['id']]=value
+    audit=math_audit([{'id':aid,'text':value} for aid,value in runs.items()],folder,'conversion-math')
+    failed={e['nodeId']:e['error'] for e in audit['details']}
+    for index,a in enumerate(atoms):
+        if a['id'] in failed:
+            runs[a['id']],record=source_representation(extraction,structure,index,folder,assets,failed[a['id']]);fallbacks.append(record)
+    aliases=image_aliases(atoms,structure,runs,fallbacks)
     nodes=[];mapping={};groups=structure['groups']
     for d in structure['documents']:
         head=runs[d['title_atom']] if d['title_atom'] else segments(d['title'],assets,folder)
@@ -240,15 +255,19 @@ def build(extraction,structure,folder,title):
         for i in range(d['start'],d['end']):
             a=atoms[i]
             if a['id']==d['title_atom']:continue
+            if a['id'] in aliases:
+                mapping[a['id']]=aliases[a['id']];continue
             ancestors=[g['parent'] for g in groups if g['parent']<i<=g['through']]
             parent=atoms[max(ancestors)]['id'] if ancestors else d['id']
+            parent=aliases.get(parent,parent)
             nodes.append({'id':a['id'],'parentId':parent,'document':False,'text':runs[a['id']]});mapping[a['id']]=a['id']
     bundle={'schemaVersion':1,'packageId':'material.'+extraction['source_sha256'][:24]+'.v1','title':title,
             'nodes':nodes,'assets':assets.records,'provenance':{'sourceSha256':extraction['source_sha256'],
-            'structureBasis':structure['basis'],'atomToNode':mapping,'llmProvider':'codex_exec'}}
+            'structureBasis':structure['basis'],'atomToNode':mapping,'llmProvider':'codex_exec',
+            'sourceImageFallbacks':fallbacks}}
     save(folder/'rich-atoms.json',runs);save(folder/'asset-trace.json',assets.trace)
     save(folder/'package.json',bundle)
-    save(folder/'representation-notes.json',{'merged_tables_expanded_to_grid':table_spans})
+    save(folder/'representation-notes.json',{'merged_tables_expanded_to_grid':table_spans,'source_image_fallbacks':fallbacks,'source_image_aliases':aliases})
     export_markdown(bundle,structure,folder)
     (folder/'preview.html').write_text(local_preview(bundle),encoding='utf-8')
     return bundle
@@ -291,9 +310,11 @@ def export_markdown(bundle,structure,folder):
         target=folder/'markdown/分篇'/f'{number:04d} {safe}.md';target.parent.mkdir(exist_ok=True)
         paths[d['id']]=target
         output=['# '+markdown_text(byid[d['id']]['text'],folder,'../_assets/'),'']
+        seen={d['id']}
         for a in structure['atoms'][d['start']:d['end']]:
             nid=mapping[a['id']]
-            if nid==d['id']:continue
+            if nid in seen:continue
+            seen.add(nid)
             indent=depths[nid]-depths[d['id']]-1
             output.append('  '*indent+'- '+markdown_text(byid[nid]['text'],folder,'../_assets/').replace('\n','\n'+'  '*(indent+1)))
         target.write_text('\n'.join(output)+'\n',encoding='utf-8')

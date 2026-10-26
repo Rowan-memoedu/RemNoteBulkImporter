@@ -151,6 +151,86 @@ class MaterialTests(unittest.TestCase):
         self.assertIn('≠',result[0]['value']);self.assertIn('∉',result[0]['value'])
         self.assertNotIn(r'\text{A≠B}',result[0]['value'])
 
+    def fallback_fixture(self,source_text):
+        from PIL import Image
+        from materials.common import file_sha
+        source=self.folder/'source.txt';source.write_text('Frozen source',encoding='utf-8')
+        image=self.folder/'table.png';Image.new('RGB',(20,10),'navy').save(image)
+        common={'block':2,'page':1,'bbox':[100,200,800,500],'source_type':'table','doc':'d'}
+        atoms=[dict(common,id='a000000',kind='table',text=source_text),
+               dict(common,id='a000001',kind='image',text='',path=str(image),sha256=file_sha(image))]
+        extraction={'source':str(source),'source_sha256':file_sha(source)}
+        structure={'atoms':atoms,'groups':[],'basis':'fixture','documents':[{'id':'d','parent':None,'title':'Data','title_atom':None,'start':0,'end':2}]}
+        return extraction,structure
+
+    def test_invalid_table_uses_proved_source_image_once(self):
+        from materials.render import build
+        from materials.validate import validate_image_fallbacks
+        from materials.common import load
+        e,s=self.fallback_fixture(r'<table><tr><td>\(x</td></tr></table>')
+        frozen=copy.deepcopy(s);bundle=build(e,s,self.folder,'Example')
+        self.assertEqual(s,frozen)
+        self.assertEqual(len(bundle['nodes']),2)
+        self.assertEqual(bundle['provenance']['atomToNode']['a000001'],'a000000')
+        runs=load(self.folder/'rich-atoms.json')
+        self.assertEqual(len(validate_image_fallbacks(e,s,bundle,runs,self.folder)),1)
+        document=next((self.folder/'markdown/分篇').glob('*.md')).read_text(encoding='utf-8')
+        self.assertEqual(document.count('![]'),1)
+        bundle['provenance']['sourceImageFallbacks']=[]
+        with self.assertRaisesRegex(ValueError,'merged without image evidence'):
+            validate_image_fallbacks(e,s,bundle,runs,self.folder)
+
+    def test_image_fallback_cannot_hide_a_valid_formula(self):
+        from materials.render import build
+        from materials.validate import validate_image_fallbacks
+        from materials.common import load,sha
+        e,s=self.fallback_fixture(r'<table><tr><td>\(x</td></tr></table>')
+        bundle=build(e,s,self.folder,'Example');runs=load(self.folder/'rich-atoms.json')
+        s['atoms'][0]['text']='<table><tr><td>$x$</td></tr></table>'
+        bundle['provenance']['sourceImageFallbacks'][0]['raw_text_sha256']=sha(s['atoms'][0]['text'])
+        with self.assertRaisesRegex(ValueError,'replaced a valid formula'):
+            validate_image_fallbacks(e,s,bundle,runs,self.folder)
+
+    def test_table_fallback_requires_same_region_and_unchanged_image(self):
+        from materials.render import build
+        e,s=self.fallback_fixture(r'<table><tr><td>\(x</td></tr></table>')
+        s['atoms'][1]['block']=3
+        with self.assertRaisesRegex(ValueError,'no PDF source image'):build(e,s,self.folder,'Example')
+        s['atoms'][1]['block']=2;s['atoms'][1]['sha256']='0'*64
+        with self.assertRaisesRegex(ValueError,'Source image changed'):build(e,s,self.folder,'Example')
+
+    def test_image_alias_does_not_cross_outline_parent(self):
+        from materials.source_images import image_aliases
+        e,s=self.fallback_fixture('unused')
+        s['groups']=[{'parent':0,'through':1}]
+        runs={a['id']:[{'kind':'image','assetId':'img-proof'}] for a in s['atoms']}
+        records=[{'atom':'a000000','source_image_atom':'a000001'}]
+        self.assertEqual(image_aliases(s['atoms'],s,runs,records),{})
+
+    def test_bad_formula_pdf_crop_is_pixel_verified(self):
+        import pymupdf
+        from materials.render import build
+        from materials.validate import validate_image_fallbacks
+        from materials.common import file_sha,load
+        source=self.folder/'source.pdf'
+        with pymupdf.open() as pdf:
+            page=pdf.new_page();page.insert_text((100,180),'Original formula: x + y');pdf.save(source)
+        e,s=self.fallback_fixture('unused');e.update(source=str(source),source_sha256=file_sha(source))
+        s['atoms']=s['atoms'][:1];s['atoms'][0].update(kind='equation',source_type='equation',text=r'$$\UnknownSymbol{x}$$')
+        s['documents'][0]['end']=1
+        bundle=build(e,s,self.folder,'Physics');runs=load(self.folder/'rich-atoms.json')
+        records=validate_image_fallbacks(e,s,bundle,runs,self.folder)
+        self.assertEqual(records['a000000']['mode'],'pdf_crop')
+        bundle['provenance']['sourceImageFallbacks'][0]['bbox']=[0,0,1000,1000]
+        with self.assertRaisesRegex(ValueError,'evidence changed'):validate_image_fallbacks(e,s,bundle,runs,self.folder)
+
+    def test_valid_table_keeps_native_formula_without_fallback(self):
+        from materials.render import build
+        e,s=self.fallback_fixture('<table><tr><td>$x^2$</td></tr></table>')
+        bundle=build(e,s,self.folder,'Example')
+        self.assertEqual(bundle['provenance']['sourceImageFallbacks'],[])
+        self.assertEqual(len(bundle['nodes']),3)
+
     def test_ocr_inline_table_media_resolves_without_source_rewrite(self):
         from PIL import Image
         managed=self.folder/'managed.png';Image.new('RGB',(3,3),'red').save(managed)
@@ -222,6 +302,16 @@ class MaterialTests(unittest.TestCase):
         report={'source_sha256':'a'*64,'info':{'hash':'new'}}
         with patch('materials.delivery.STATE',state),patch('materials.delivery.validate',return_value=report),patch('materials.delivery.mcp',return_value={'connected':True,'kbId':'expected'}) as client:
             with self.assertRaisesRegex(ValueError,'different import package'):deliver(self.folder,'expected')
+            self.assertEqual(client.call_count,1)
+
+    def test_existing_source_cannot_change_parent_silently(self):
+        from materials.delivery import deliver
+        from materials.common import save
+        state=self.folder/'registry';state.mkdir()
+        save(state/('expected-'+'a'*64+'.json'),{'packageHash':'same','parentRemId':'first','status':'complete'})
+        report={'source_sha256':'a'*64,'info':{'hash':'same'}}
+        with patch('materials.delivery.STATE',state),patch('materials.delivery.validate',return_value=report),patch('materials.delivery.mcp',return_value={'connected':True,'kbId':'expected'}) as client:
+            with self.assertRaisesRegex(ValueError,'different parent'):deliver(self.folder,'expected','second')
             self.assertEqual(client.call_count,1)
 
 

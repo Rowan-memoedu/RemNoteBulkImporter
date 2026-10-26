@@ -11,7 +11,7 @@ def run(args,source,folder,identity):
         print(json.dumps(validate(folder),ensure_ascii=False));return
     if args.phase=='import':
         from .delivery import deliver
-        deliver(folder,args.kb_id);return
+        deliver(folder,args.kb_id,args.parent_rem_id);return
     from .structure import prepare_structure
     from .render import build
     from .validate import validate
