@@ -1,11 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {imageReadbackCompatibility} from '../src/rich-compat.mjs';
+import {imageReadbackCompatibility,automaticImageGeometry} from '../src/rich-compat.mjs';
 import {imageTransportHashMatches} from '../src/rich-hash.mjs';
 import {sha256,stableJSON} from '../src/package.mjs';
 const asset={mime:'image/png',base64:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',sha256:'fixture'};
 const url=`data:${asset.mime};base64,${asset.base64}`;
 const factory=(extra={})=>imageReadbackCompatibility({a:asset},{loadCached:async()=>null,verify:async()=>{},...extra});
+
+test('automatic container fit retains exact source aspect ratio across independent window and indentation widths',()=>{
+  assert.equal(automaticImageGeometry({width:900,height:562.5},{width:1600,height:1000}),true);
+  assert.equal(automaticImageGeometry({width:900,height:150},{width:2400,height:400}),true);
+  assert.equal(automaticImageGeometry({width:899,height:561.875},{width:1600,height:1000}),true);
+  assert.equal(automaticImageGeometry({width:640,height:400},{width:1600,height:1000}),true);
+  assert.equal(automaticImageGeometry({width:318,height:53},{width:2400,height:400}),true);
+  assert.equal(automaticImageGeometry({width:900,height:563},{width:1600,height:1000}),false);
+  assert.equal(automaticImageGeometry({width:900,height:900},{width:100,height:100}),false);
+  assert.equal(automaticImageGeometry({width:0,height:0},{width:100,height:100}),false);
+  assert.equal(automaticImageGeometry({width:NaN,height:100},{width:100,height:100}),false);
+});
 test('only automatic zero-percent natural geometry is projected; source payload and other rich fields stay exact',async()=>{
   const original=['Text',{i:'x',text:'x^2',block:true},{i:'i',url,width:undefined,height:undefined}],actual=structuredClone(original);
   Object.assign(actual[2],{width:1,height:1,percent:0});

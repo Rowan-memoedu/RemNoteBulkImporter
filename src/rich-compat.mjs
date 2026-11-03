@@ -1,5 +1,5 @@
 /** Compatibility for RemNote's automatic natural-size image metadata. This is a
- * read-only projection: unknown images, resized geometry and all other fields
+ * read-only projection: unknown images, distorted geometry and all other fields
  * remain strict. Neither source text nor live RichText is rewritten.
  */
 export async function naturalDimensions(asset){
@@ -11,6 +11,17 @@ export async function naturalDimensions(asset){
     const size={width:bitmap.width,height:bitmap.height};bitmap.close();return size;
   }
   throw new Error('Cannot establish natural image dimensions for SDK compatibility');
+}
+// ImageNode initializes missing dimensions from naturalWidth/naturalHeight with
+// percent=0. LinearEditor then fits those dimensions to clientWidth-10 (and a
+// 999999 height cap), preserving aspect ratio. Container width varies with the
+// window, indentation and editor. Thus 900 is not a universal display cap.
+// Only a downscale of byte-verified media can qualify; percent=0 and the original
+// checkpoint hash are required by the callers. Defined source geometry is kept.
+export function automaticImageGeometry(part,natural){
+  return Number.isFinite(part.width)&&Number.isFinite(part.height)&&
+    part.width>0&&part.height>0&&part.width<=natural.width&&part.height<=natural.height&&
+    Math.abs(part.height-natural.height*part.width/natural.width)<1e-9;
 }
 export function imageReadbackCompatibility(assets,{loadCached,verify}){
   const sources=new Map(),verified=new Set(),dimensions=new Map();let cachedLoaded=false;
@@ -44,7 +55,7 @@ export function imageReadbackCompatibility(assets,{loadCached,verify}){
         if(original.width===undefined&&original.height===undefined&&(part.width!==undefined||part.height!==undefined)){
           if(!dimensions.has(asset.sha256))dimensions.set(asset.sha256,await naturalDimensions(asset));
           const natural=dimensions.get(asset.sha256);
-          if(part.width!==natural.width||part.height!==natural.height)throw new Error('Image geometry differs from verified natural size; refusing compatibility projection');
+          if(!automaticImageGeometry(part,natural))throw new Error('Image geometry differs from verified natural size; refusing compatibility projection');
           if(part.url.startsWith('data:')){image.width=undefined;image.height=undefined;}
           else {delete image.width;delete image.height;}
         }
@@ -66,7 +77,7 @@ export function imageReadbackCompatibility(assets,{loadCached,verify}){
       const {asset}=await source(part.url);
       if(!dimensions.has(asset.sha256))dimensions.set(asset.sha256,await naturalDimensions(asset));
       const natural=dimensions.get(asset.sha256);
-      if(part.width===natural.width&&part.height===natural.height)eligible.add(i);
+      if(automaticImageGeometry(part,natural))eligible.add(i);
     }
     if(!eligible.size)return [];
     return ['dimensions','both','percent'].map(mode=>rich.map((part,i)=>{

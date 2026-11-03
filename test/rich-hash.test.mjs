@@ -23,3 +23,14 @@ test('an own undefined percent key can survive JSON omission but a defined value
   assert.equal(await imageTransportHashMatches(transported,hash),true);
   assert.equal(await imageTransportHashMatches([{...transported[0],percent:50}],hash),false);
 });
+
+test('unset image metadata added by an SDK read must match the unchanged original checkpoint',async()=>{
+  const original=[{i:'i',url:'independent',title:'Keep',cId:undefined,width:undefined,height:undefined},'Caption'];
+  const actual=[{i:'i',url:'independent',title:'Keep',cId:undefined,onlyAudio:undefined},'Caption'];
+  const hash=await sha256(stableJSON(original));
+  assert.equal(await imageTransportHashMatches(actual,hash),true);
+  assert.equal(await imageTransportHashMatches([{...actual[0],onlyAudio:true},'Caption'],hash),false);
+  assert.equal(await imageTransportHashMatches([{...actual[0],cId:'changed'},'Caption'],hash),false);
+  assert.equal(await imageTransportHashMatches([actual[0],'Edited caption'],hash),false);
+  assert.equal(Object.hasOwn(actual[0],'onlyAudio'),true);
+});
