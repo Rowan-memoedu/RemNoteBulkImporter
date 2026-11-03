@@ -49,7 +49,19 @@ def markdown_atoms(text, base):
             rows=[];cells=[]
             import html
             for t in tokens[i:end+1]:
-                if t.type=='inline':cells.append('<td>'+html.escape(t.content)+'</td>')
+                if t.type=='inline':
+                    # Parse inline Markdown in cells (including image/link
+                    # nodes), while shielding TeX backslashes from CommonMark.
+                    from .render import math_split
+                    formulas={};pieces=[]
+                    for kind,value,block in math_split(t.content):
+                        if kind=='latex':
+                            marker='RBICELLMATH'+str(len(formulas))+'TOKEN'
+                            formulas[marker]=('$$' if block else '$')+value+('$$' if block else '$');pieces.append(marker)
+                        else:pieces.append(value)
+                    cell=parser.renderInline(''.join(pieces))
+                    for marker,value in formulas.items():cell=cell.replace(marker,html.escape(value))
+                    cells.append('<td>'+cell+'</td>')
                 elif t.type=='tr_close':rows.append('<tr>'+''.join(cells)+'</tr>');cells=[]
             atoms.append({'kind':'table','text':'<table>'+''.join(rows)+'</table>','heading_level':0,'base':str(base)})
             i=end

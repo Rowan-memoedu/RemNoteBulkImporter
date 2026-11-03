@@ -82,9 +82,12 @@ class Assets:
         else:
             from PIL import Image
             with Image.open(io.BytesIO(data)) as image:
+                image_format=image.format
                 image.verify()
-            suffix=path.suffix.lower()
-            if suffix not in ('.png','.jpg','.jpeg','.gif','.webp'):
+            # Published media can keep an old filename extension after format
+            # conversion. MIME must follow decoded bytes, not that extension.
+            suffix={'PNG':'.png','JPEG':'.jpg','GIF':'.gif','WEBP':'.webp'}.get(image_format)
+            if suffix is None:
                 with Image.open(io.BytesIO(data)) as image:
                     require(getattr(image,'n_frames',1)==1,'Animated non-native image needs a frame-preserving adapter')
                     buffer=io.BytesIO();image.save(buffer,format='PNG');data=buffer.getvalue();suffix='.png'
@@ -263,7 +266,8 @@ def build(extraction,structure,folder,title):
             nodes.append({'id':a['id'],'parentId':parent,'document':False,'text':runs[a['id']]});mapping[a['id']]=a['id']
     bundle={'schemaVersion':1,'packageId':'material.'+extraction['source_sha256'][:24]+'.v1','title':title,
             'nodes':nodes,'assets':assets.records,'provenance':{'sourceSha256':extraction['source_sha256'],
-            'structureBasis':structure['basis'],'atomToNode':mapping,'llmProvider':'codex_exec',
+            'structureBasis':structure['basis'],'atomToNode':mapping,
+            **({'structureProvider':structure['provider']} if structure.get('provider') else {'llmProvider':'codex_exec'}),
             'sourceImageFallbacks':fallbacks}}
     save(folder/'rich-atoms.json',runs);save(folder/'asset-trace.json',assets.trace)
     save(folder/'package.json',bundle)

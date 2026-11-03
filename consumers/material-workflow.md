@@ -22,6 +22,20 @@ node consumers/material-workflow.mjs import 'D:\Downloads\资料.pdf' --kb-id '<
 
 默认产物在 `D:\Artifacts\RemNoteBulkImporter\materials\<来源哈希前缀>`。正文见 `markdown/阅读目录.md`、`markdown/分篇`、`markdown/全书大纲.md` 和 `preview.html`；检查证据独立保存在 JSON 文件中。`validation.json` 代表本地验证，只有 `completion.json` 及 MCP 完成回执代表实际导入完成。
 
+### 已授权网站的 Markdown 快照
+
+Obsidian Publish 等网站已有原始 Markdown 时，用 `materials.publish_snapshot` 将冻结的本地页面集合接到同一渲染、校验、去重与 MCP 导入器：
+
+```powershell
+# 工作目录 consumers；使用上文安装的 material-venv Python
+python -m materials.publish_snapshot prepare '<本地 source/snapshot.json>' --output '<产物目录>' --title '<资料标题>'
+python -m materials.publish_snapshot import '<本地 source/snapshot.json>' --output '<产物目录>' --kb-id '<目标库 ID>'
+```
+
+该适配器不联网、不接收密码。快照包含 `site`、`pages`（每页的站内 `path`、本地相对 `file`、原字节 `sha256`）、下载失败清单；旁边的 `cache.json` 为站内路径索引，`assets.json` 保存每份已下载媒体的站内路径/URL、本地相对文件和 SHA-256。可用 `selectedPaths`、`assetsSha256`、`cacheSha256` 固定完整选择及关联清单。下载阶段必须先取得适用授权，密码与签名 URL 不进入快照。
+
+每个来源页面为一个 Document，目录保留来源路径，页内标题和列表为普通大纲。只合并同名且原文字节完全一致的页面；别名路径保留在独立凭据中。Wiki 链接转换为精确内部引用，源站未发布的目标保留原链接。所有可用图片必须落为原生图片，图片出现次数与来源归一化记录相等；缺失附件保留原名与位置。交互网页、视频及 PDF 保留原链接，PDF 正文可另用既有 PDF 流程导入同一资料根下。SVG 以隔离、禁止联网的 Chrome 截图保留嵌入文字，并附原 SVG 链接供查看动画；原文件、截图及哈希记录均留在本地。需要 Chrome 的 SVG 转换使用 `RBI_RENDER_CHROME` 或本机安装位置，不操作现有浏览器窗口。
+
 ## 输入与结构
 
 | 输入 | 提取方式 | 边界 |

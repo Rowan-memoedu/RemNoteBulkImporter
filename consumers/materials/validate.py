@@ -13,6 +13,21 @@ from .structure import validate_groups
 from .source_images import math_audit, source_representation, image_aliases
 
 
+def markdown_visible_with_math(text, parser):
+    """Project prose formatting as a whole; math must not split ** wrappers."""
+    from .render import math_split
+    formulas={};pieces=[]
+    for kind,value,_ in math_split(text):
+        if kind=='latex':
+            marker='RBICOVERAGEMATH'+str(len(formulas))+'TOKEN'
+            require(marker not in text,'Ambiguous source coverage marker')
+            formulas[marker]=value;pieces.append(marker)
+        else:pieces.append(value)
+    visible=BeautifulSoup(parser.renderInline(''.join(pieces)),'html.parser').get_text()
+    for marker,value in formulas.items():visible=visible.replace(marker,value)
+    return visible
+
+
 def inspect_package(path):
     code="import{readFile}from'node:fs/promises';import{inspectPackage}from'./src/package.mjs';console.log(JSON.stringify(await inspectPackage(JSON.parse(await readFile(process.argv[1],'utf8')))));"
     result=subprocess.run(['node','--input-type=module','-e',code,str(path)],cwd=REPO,capture_output=True,text=True,encoding='utf-8',timeout=120)
@@ -84,11 +99,10 @@ def validate(folder):
         validate_body_parent(a,index,structure['groups'],native,documents,mapping)
         require(native['text']==runs[a['id']],'Built native text differs from frozen conversion')
         if a['id'] in fallbacks:pass  # Pixel/hash and concrete conversion failure proved above.
-        elif a['kind'] in ('text','equation') and not re.search(r'!\[',a['text']):
+        elif a['kind'] in ('text','equation'):
             from .render import math_split
-            expected=''
-            for kind,value,_ in math_split(a['text'],strict=a['kind']=='equation') if not a.get('literal') else [('text',a['text'],False)]:
-                expected+=value if kind=='latex' or a.get('literal') else BeautifulSoup(parser.renderInline(value),'html.parser').get_text()
+            if a['kind']=='equation':math_split(a['text'],strict=True)
+            expected=a['text'] if a.get('literal') else markdown_visible_with_math(a['text'],parser)
             actual=''.join(BeautifulSoup(parser.renderInline(s['value']),'html.parser').get_text() if s['kind']=='markdown' else s.get('value','') for s in native['text'])
             require(normal(expected)==normal(actual),f'Source text/formula changed: {a["id"]}')
         elif a['kind']=='html':
