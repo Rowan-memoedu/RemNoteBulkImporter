@@ -22,12 +22,12 @@ def run_special(args,source,folder,kind):
         from .validate import validate
         if args.phase=='validate':return validate(folder)
         from .delivery import deliver
-        return deliver(folder,args.kb_id,args.parent_rem_id)
+        return deliver(folder,args.kb_id,args.parent_rem_id,getattr(args,'replace_root',None),getattr(args,'archive_parent_rem_id',None))
     if kind=='publish-snapshot':
         from .publish_snapshot import prepare
         return prepare(source,folder,args.title or load(source).get('title') or '网站资料',getattr(args,'catalog',None),extract_only=args.phase=='extract')
-    from .mindmap import extract_mindmap
-    extraction,structure=extract_mindmap(source,folder)
+    from .mindmap_readable import extract_readable
+    extraction,structure=extract_readable(source,folder,args.model)
     if args.phase=='extract':return {'status':'extracted','atoms':len(extraction['atoms']),'adapter':kind}
     from .render import build
     from .validate import validate

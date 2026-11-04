@@ -61,9 +61,21 @@ node consumers/material-workflow.mjs prepare '<图谱.pdf>' --layout mindmap --o
 node consumers/material-workflow.mjs import '<图谱.pdf>' --layout mindmap --output '<产物目录>' --kb-id '<目标库 ID>'
 ```
 
-该模式要求每页有单个可辨识的彩色根框，从 PDF 原始连接线恢复树形父子关系，支持左右分支、下划线节点、方框／圆角框节点，以及被导出为填充轮廓的连线。页根和首层主题为 Document，内部节点保持普通大纲；每页附完整原图。文字直接提取，嵌入的公式图片和截图按原字节保留，不把公式图片猜写成 LaTeX。图外箭头批注与无法证明归属的附图保留在对应页根，原图仍呈现其位置。
+该模式要求每页有单个可辨识的彩色根框，从 PDF 原始连接线恢复树形父子关系，支持左右分支、下划线、方框／圆角框及填充轮廓连线。同一水平线上的分叉点保持父子关系，不能把父节点和与它齐平的一个子节点合并。只有没有分叉的同基线标签延续才可合并。
 
-`mindmap-graph.json` 保留每页节点、连线、坐标和文字／图片清单。`mindmap-audit.json` 从原始 PDF 重新建立连接图，检查所有来源文字／图片片段恰好出现一次、节点标签没有串位、父子关系没有变化、原图没有变化；然后继续通用包校验与全部 RemNote 节点／媒体回读。扫描导图、多个根不明确、断线或带环的关系图会明确停止，不能把普通 OCR 顺序当成已恢复图谱；需要额外的可核验视觉／图关系适配器后再支持。
+分页只服务版面：全书只有一个根，页根不成为内容容器。总览与详细页的重复章节按明确章序或相同标题合并，章节为 Document，内部为普通大纲；同父下完全相同的内容合并并保留来源去向。整页图只用于来源核验，不重复插入已经拆好的正文。
+
+原生文字直接提取。嵌入图片先合成自己的 PDF 透明遮罩，再铺白底，避免黑图、空白和邻近文字污染。MinerU 对每幅图片做 OCR；Codex EXEC 根据真实像素区分文字／公式、教学绘图和装饰图标。文字／公式变成可编辑文本与原生 LaTeX，截图中的多行内容成为对应主题下的并列节点；内嵌符号依据原字符坐标插回文字间隙。全部转写再逐图校对像素，KaTeX 语法通过不能替代这一步。真正教学绘图保留图片，纯装饰图标不进入笔记。
+
+远离候选标签下划线的浮动图片不能凭最近的下一条线归属。先核对源箭头；无法唯一确定时，用实际图片、原页上下文和有界真实候选主题做视觉归属，记录在 `mindmap-attachments.json`。`readable-tree.json` 保存合并后的单树和来源去向；`mindmap-readable-inputs.json` 冻结识别、分类、转写和归属凭据。`mindmap-readable-audit.json` 从原 PDF 重建拓扑与图片遮罩合成，检查每个来源片段均显示或有明确合并／装饰排除原因，并继续通用包校验及全部 RemNote 节点／媒体回读。扫描图、根不明确、断线或带环的关系图明确停止，不把 OCR 阅读顺序当成拓扑。
+
+修复自己已导入且被退回的结果时，先在新产物目录从原始资料重新生成，通过后显式指定旧根和恢复容器：
+
+```powershell
+node consumers/material-workflow.mjs import '<图谱.pdf>' --layout mindmap --output '<修正产物目录>' --kb-id '<目标库 ID>' --replace-root '<旧书根 ID>' --archive-parent-rem-id '<库根级 trash ID>'
+```
+
+替换先验证同来源完成凭据、旧根精确 ID 和父节点。新树完成全部回读后，旧树整棵移入恢复容器，随后才更新来源登记；`replacement-recovery.json` 保留旧回执和移动前后状态。归档失败可重跑恢复，新包不再创建第二棵；原包和旧树不删除。用户材料的批量替换仍须有明确授权，此参数不扩张授权。
 
 ## 输入与结构
 
@@ -76,7 +88,7 @@ node consumers/material-workflow.mjs import '<图谱.pdf>' --layout mindmap --ou
 | Markdown、UTF-8 TXT | 本地解析 | 代码保留；TXT 不猜测编码；原有标题/列表作为结构依据 |
 | HTML | 本地解析 | 保留正文、标题、公式、表格和本地图片；外部图片需随资料落地，无法表达的嵌入对象明确停止 |
 | 网站 Markdown 快照／页面集合 JSON | 原始 Markdown＋站内路径与媒体凭据 | 自动识别 `site/pages` 清单；真实层级、内部引用、SVG 预览、缺失附件位置；可用完整目录方案重组 |
-| 矢量思维导图／大纲图谱 PDF | `--layout mindmap`，PDF 连接拓扑＋原始文字／图片 | 双向分支按连线建树；保留整页原图；扫描图、断线或环路不冒充树形导入 |
+| 矢量思维导图／大纲图谱 PDF | `--layout mindmap`，PDF 连线＋原生文字＋公式图片 OCR | 跨页单树、章节合并、原生公式和并列节点；只保留教学绘图；扫描图、断线或环路停止 |
 
 MinerU 支持类型与单文件限制以[官方文档](https://mineru.net/apiManage/docs)为依据。凭据继续由既有 OCR runner 获取，工作流不复制或记录密钥。
 
@@ -116,6 +128,8 @@ OCR 公式出现未闭合定界符或无法通过 KaTeX 时，保留原始识别
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/publish_snapshot_test.py
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/material_catalog_test.py
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/mindmap_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/mindmap_readable_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/material_replacement_test.py
 npm test
 npm run typecheck
 npm run build

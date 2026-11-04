@@ -85,6 +85,9 @@ def validate(folder):
     elif extraction.get('metadata',{}).get('adapter')=='vector-mindmap':
         from .mindmap import audit_mindmap
         audit_mindmap(Path(extraction['source']),folder)
+    elif extraction.get('metadata',{}).get('adapter')=='mindmap-readable':
+        from .mindmap_readable import audit_readable
+        audit_readable(Path(extraction['source']),folder)
     require(file_sha(extraction['source'])==extraction['source_sha256'],'Original source changed')
     if extraction.get('raw_ocr_sha256'):
         require(file_sha(folder/'ocr-blocks.json')==extraction['raw_ocr_sha256'],'Raw OCR evidence changed')

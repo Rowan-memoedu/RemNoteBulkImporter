@@ -95,24 +95,30 @@ def page_graph(page):
         if len(touched)==2:
             edges.append((*touched,None,i));bridges.append(i)
     # Collapse each underlined label into a vertex. Other curves remain edges.
-    representative={}
+    # A junction with three incident paths is a real branch even when its
+    # parent and one child share a baseline. Contracting that junction would
+    # turn the child label into part of its parent and flatten its siblings.
+    degree=collections.Counter(p for a,b,_,_ in edges for p in (a,b))
+    representative={};expanded=[]
     def find(x):
         while x in representative:x=representative[x]
         return x
     for a,b,nid,_ in edges:
         if nid:
-            a,b=find(a),find(b)
+            original_a,original_b=a,b;a,b=find(a),find(b)
             # Exporters may split one underline into adjacent flat Béziers.
             # Merge only endpoint-connected collinear segments, retaining all
             # source drawing ordinals; never infer an edge from proximity alone.
-            for old in (a,b):
-                if old in nodes:
+            for original,old in ((original_a,a),(original_b,b)):
+                if degree[original]<=2 and old in nodes:
                     prior=nodes.pop(old);current=nodes[nid]
                     current['bbox']=[min(current['bbox'][0],prior['bbox'][0]),min(current['bbox'][1],prior['bbox'][1]),max(current['bbox'][2],prior['bbox'][2]),max(current['bbox'][3],prior['bbox'][3])]
                     current.setdefault('merged_drawings',[]).extend([prior['drawing'],*prior.get('merged_drawings',[])])
-            representative[a]=nid;representative[b]=nid
+                if degree[original]<=2:representative[old]=nid
+            expanded.extend([(original_a,nid,None,0),(nid,original_b,None,0)])
+        else:expanded.append((a,b,None,0))
     adjacent=collections.defaultdict(set)
-    for a,b,nid,i in edges:
+    for a,b,nid,i in expanded:
         a,b=find(a),find(b)
         if a!=b:adjacent[a].add(b);adjacent[b].add(a)
     root=roots[0]['id'];parents={root:None};queue=[root];cross=[]
