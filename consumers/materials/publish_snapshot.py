@@ -225,6 +225,10 @@ def audit_snapshot(source, folder):
         path=(root/record['file']).resolve(strict=True)
         require(path.is_relative_to(root.resolve()) and file_sha(path)==record['sha256'],'Snapshot bytes changed: '+record['path'])
     normalized=load(folder/'publish-normalization.json')
+    structure=load(folder/'structure.json')
+    if structure.get('catalog_sha256'):
+        from .catalog import audit_catalog
+        audit_catalog(structure,normalized['aliases'],folder)
     require(set(normalized['aliases'])=={p['path'] for p in snapshot['pages']},'Source page omitted from alias coverage')
     canonical=set(normalized['aliases'].values())
     require(canonical=={a['source_page'] for a in extraction['atoms']},'Source page omitted from extraction')
@@ -248,7 +252,7 @@ def render_preview(folder):
     (folder/'preview.html').write_text(local_preview(load(folder/'package.json'),load(folder/'preview-math.json')),encoding='utf8')
 
 
-def prepare(source, folder, title):
+def prepare(source, folder, title, catalog=None, extract_only=False):
     snapshot = load(source)
     require(not snapshot.get('failures'), 'Snapshot contains failed page downloads')
     root = source.parent
@@ -342,10 +346,14 @@ def prepare(source, folder, title):
     extraction = {'source': str(source), 'source_sha256': file_sha(source), 'atoms': [{k:v for k,v in a.items() if k!='doc'} for a in atoms],
                   'metadata': {'adapter': 'publish-snapshot'}, 'coverage': {'fields': len(atoms), 'pages': len(pages)}}
     structure = {'basis': 'source_pages_and_markdown_nesting', 'provider':'source_markup', 'contents_pages': [], 'documents': docs, 'atoms': atoms, 'groups': groups}
+    if catalog:
+        from .catalog import apply_catalog
+        structure=apply_catalog(structure,Path(catalog),aliases,folder)
     save(folder/'source.json', {'source': str(source), 'source_sha256': file_sha(source)})
     save(folder/'extraction.json', extraction)
     save(folder/'structure.json', structure)
     save(folder/'publish-normalization.json', {'aliases': aliases, 'notes': notes, 'media_representations':representations,'normalized_sha256': {k: sha(v) for k,v in normalized.items()}, 'pages': len(pages), 'unique_pages': len(chosen)})
+    if extract_only:return {'status':'extracted','adapter':'publish-snapshot','pages':len(pages),'unique_pages':len(chosen),'atoms':len(atoms)}
     bundle = build(extraction, structure, folder, title)
     require(sum(s['kind']=='image' for n in bundle['nodes'] for s in n['text']) == sum(n['kind']=='image' for n in notes),
             'Source image occurrence count differs from typed native images')

@@ -1,6 +1,6 @@
 # 通用资料导入 RemNote
 
-将本地图文资料转换为可检查的 Markdown 大纲、离线阅读页和标准 RemNote 包，再通过现有 Bulk Importer MCP 导入。每份资料只创建新的书籍或资料子树。
+将文档、网站 Markdown 页面集合和矢量思维导图 PDF 转换为可检查的 Markdown 大纲、离线阅读页和标准 RemNote 包，再通过现有 Bulk Importer MCP 导入。各类型共用同一个命令、来源去重、目标库检查和完整回读；每份资料只创建新的书籍或资料子树。
 
 ## 使用
 
@@ -22,19 +22,48 @@ node consumers/material-workflow.mjs import 'D:\Downloads\资料.pdf' --kb-id '<
 
 默认产物在 `D:\Artifacts\RemNoteBulkImporter\materials\<来源哈希前缀>`。正文见 `markdown/阅读目录.md`、`markdown/分篇`、`markdown/全书大纲.md` 和 `preview.html`；检查证据独立保存在 JSON 文件中。`validation.json` 代表本地验证，只有 `completion.json` 及 MCP 完成回执代表实际导入完成。
 
-### 已授权网站的 Markdown 快照
+### 网站页面集合与目录整理
 
-Obsidian Publish 等网站已有原始 Markdown 时，用 `materials.publish_snapshot` 将冻结的本地页面集合接到同一渲染、校验、去重与 MCP 导入器：
+Obsidian Publish 等网站已有原始 Markdown 时，先冻结已授权范围的页面和媒体，再把 `snapshot.json` 直接交给通用入口。旧 `materials.publish_snapshot` 命令继续兼容：
 
 ```powershell
-# 工作目录 consumers；使用上文安装的 material-venv Python
-python -m materials.publish_snapshot prepare '<本地 source/snapshot.json>' --output '<产物目录>' --title '<资料标题>'
-python -m materials.publish_snapshot import '<本地 source/snapshot.json>' --output '<产物目录>' --kb-id '<目标库 ID>'
+node consumers/material-workflow.mjs prepare '<本地 source/snapshot.json>' --output '<产物目录>' --title '<资料标题>'
+node consumers/material-workflow.mjs validate '<本地 source/snapshot.json>' --output '<产物目录>'
+node consumers/material-workflow.mjs import '<本地 source/snapshot.json>' --output '<产物目录>' --kb-id '<目标库 ID>'
 ```
 
 该适配器不联网、不接收密码。快照包含 `site`、`pages`（每页的站内 `path`、本地相对 `file`、原字节 `sha256`）、下载失败清单；旁边的 `cache.json` 为站内路径索引，`assets.json` 保存每份已下载媒体的站内路径/URL、本地相对文件和 SHA-256。可用 `selectedPaths`、`assetsSha256`、`cacheSha256` 固定完整选择及关联清单。下载阶段必须先取得适用授权，密码与签名 URL 不进入快照。
 
 每个来源页面为一个 Document，目录保留来源路径，页内标题和列表为普通大纲。只合并同名且原文字节完全一致的页面；别名路径保留在独立凭据中。Wiki 链接转换为精确内部引用，源站未发布的目标保留原链接。所有可用图片必须落为原生图片，图片出现次数与来源归一化记录相等；缺失附件保留原名与位置。交互网页、视频及 PDF 保留原链接，PDF 正文可另用既有 PDF 流程导入同一资料根下。SVG 以隔离、禁止联网的 Chrome 截图保留嵌入文字，并附原 SVG 链接供查看动画；原文件、截图及哈希记录均留在本地。需要 Chrome 的 SVG 转换使用 `RBI_RENDER_CHROME` 或本机安装位置，不操作现有浏览器窗口。
+
+目录可以按学科、课程或主题重组。首次准备时可加 `--catalog '<目录方案.json>'`；正文、页面 ID、页内大纲和引用不变。方案中的 `containers` 声明新增目录，`pages` 必须把每篇去重后的来源页面恰好安置一次。`parent` 可以是新增目录 ID，也可以是另一篇页面的来源路径。生成器移除未使用的原站目录容器，拒绝遗漏、重复归属、缺失父节点和环路。一个通用示例：
+
+```json
+{
+  "containers": [{"id":"catalog-methods","title":"研究方法","parent":null}],
+  "pages": [
+    {"path":"站内旧目录/方法.md","parent":"catalog-methods"},
+    {"path":"零散页面/示例.md","parent":"站内旧目录/方法.md"}
+  ]
+}
+```
+
+`catalog-plan.json` 保留完整方案与其来源哈希；后续校验和导入重新核对方案与每篇页面的实际归属。已完成的导入不能通过重跑 `prepare/import` 再复制一次；使用既有 `restructure` 做只改结构的修订，并保留旧容器的恢复位置。这次剥茧物理资料的“主题目录＋正文保留＋旧目录可恢复”做法适用于其他网站，无需硬编码学科名称。
+
+URL 采集、登录或站点 API 下载是输入获取阶段，当前命令不自动爬取任意 URL，也不读取浏览器登录态。普通网页可先保存为带媒体的本地 HTML；有原始 Markdown 的网站优先用上述页面集合，避免丢失公式、内部链接和附件。
+
+### 思维导图／大纲图谱 PDF
+
+对于文字、连线和节点框仍是矢量对象的 PDF，使用：
+
+```powershell
+node consumers/material-workflow.mjs prepare '<图谱.pdf>' --layout mindmap --output '<产物目录>'
+node consumers/material-workflow.mjs import '<图谱.pdf>' --layout mindmap --output '<产物目录>' --kb-id '<目标库 ID>'
+```
+
+该模式要求每页有单个可辨识的彩色根框，从 PDF 原始连接线恢复树形父子关系，支持左右分支、下划线节点、方框／圆角框节点，以及被导出为填充轮廓的连线。页根和首层主题为 Document，内部节点保持普通大纲；每页附完整原图。文字直接提取，嵌入的公式图片和截图按原字节保留，不把公式图片猜写成 LaTeX。图外箭头批注与无法证明归属的附图保留在对应页根，原图仍呈现其位置。
+
+`mindmap-graph.json` 保留每页节点、连线、坐标和文字／图片清单。`mindmap-audit.json` 从原始 PDF 重新建立连接图，检查所有来源文字／图片片段恰好出现一次、节点标签没有串位、父子关系没有变化、原图没有变化；然后继续通用包校验与全部 RemNote 节点／媒体回读。扫描导图、多个根不明确、断线或带环的关系图会明确停止，不能把普通 OCR 顺序当成已恢复图谱；需要额外的可核验视觉／图关系适配器后再支持。
 
 ## 输入与结构
 
@@ -46,6 +75,8 @@ python -m materials.publish_snapshot import '<本地 source/snapshot.json>' --ou
 | EPUB | 既有本地 EPUB 提取器 | 按实际逻辑标题拆分，不按 XHTML 文件数拆书；不完整提取会停止 |
 | Markdown、UTF-8 TXT | 本地解析 | 代码保留；TXT 不猜测编码；原有标题/列表作为结构依据 |
 | HTML | 本地解析 | 保留正文、标题、公式、表格和本地图片；外部图片需随资料落地，无法表达的嵌入对象明确停止 |
+| 网站 Markdown 快照／页面集合 JSON | 原始 Markdown＋站内路径与媒体凭据 | 自动识别 `site/pages` 清单；真实层级、内部引用、SVG 预览、缺失附件位置；可用完整目录方案重组 |
+| 矢量思维导图／大纲图谱 PDF | `--layout mindmap`，PDF 连接拓扑＋原始文字／图片 | 双向分支按连线建树；保留整页原图；扫描图、断线或环路不冒充树形导入 |
 
 MinerU 支持类型与单文件限制以[官方文档](https://mineru.net/apiManage/docs)为依据。凭据继续由既有 OCR runner 获取，工作流不复制或记录密钥。
 
@@ -82,6 +113,9 @@ OCR 公式出现未闭合定界符或无法通过 KaTeX 时，保留原始识别
 
 ```powershell
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/materials_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/publish_snapshot_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/material_catalog_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/mindmap_test.py
 npm test
 npm run typecheck
 npm run build

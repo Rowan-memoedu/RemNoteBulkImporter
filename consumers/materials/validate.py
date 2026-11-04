@@ -79,6 +79,12 @@ def validate_image_fallbacks(extraction,structure,bundle,runs,folder):
 
 def validate(folder):
     extraction=load(folder/'extraction.json');structure=load(folder/'structure.json');bundle=load(folder/'package.json')
+    if extraction.get('metadata',{}).get('adapter')=='publish-snapshot':
+        from .publish_snapshot import audit_snapshot
+        audit_snapshot(Path(extraction['source']),folder)
+    elif extraction.get('metadata',{}).get('adapter')=='vector-mindmap':
+        from .mindmap import audit_mindmap
+        audit_mindmap(Path(extraction['source']),folder)
     require(file_sha(extraction['source'])==extraction['source_sha256'],'Original source changed')
     if extraction.get('raw_ocr_sha256'):
         require(file_sha(folder/'ocr-blocks.json')==extraction['raw_ocr_sha256'],'Raw OCR evidence changed')

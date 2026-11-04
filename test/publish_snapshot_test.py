@@ -3,6 +3,7 @@ import sys
 import json
 import tempfile
 import io
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -92,13 +93,23 @@ class PublishSnapshotTests(unittest.TestCase):
                               'cache.json':dict.fromkeys([*inputs,'assets/chart.png'],{}),
                               'assets.json':{'records':[{'path':'assets/chart.png','file':'chart.webp','sha256':sha(image)}],'failures':[]}}.items():
                 (source/name).write_text(json.dumps(data),encoding='utf8')
-            package=prepare(source/'snapshot.json',folder/'output','Archive collection')
+            # Exercise the same entry point as PDF/Office/EPUB, rather than an
+            # adapter-only command that future callers could overlook.
+            catalog={'containers':[{'id':'catalog-reading','title':'Letters and records'}],
+                     'pages':[{'path':path,'parent':'catalog-reading'} for path in inputs if not path.startswith('old/')]}
+            (folder/'catalog.json').write_text(json.dumps(catalog),encoding='utf8')
+            run=subprocess.run([sys.executable,str(Path(__file__).resolve().parents[1]/'consumers/material.py'),'prepare',str(source/'snapshot.json'),
+                '--output',str(folder/'output'),'--title','Archive collection','--catalog',str(folder/'catalog.json')],capture_output=True,text=True,encoding='utf8',timeout=120)
+            self.assertEqual(run.returncode,0,run.stderr)
+            package=json.loads((folder/'output/package.json').read_text(encoding='utf8'))
             report=json.loads((folder/'output/validation.json').read_text(encoding='utf8'))
             self.assertEqual(report['status'],'VALIDATED')
             self.assertGreater(report['info']['references'],0)
             self.assertEqual(report['info']['assets'],1)
             self.assertEqual(sum(s['kind']=='image' for n in package['nodes'] for s in n['text']),1)
             self.assertEqual(sum(n['id'].startswith('page-') for n in package['nodes']),3)
+            self.assertEqual(sum(n['id'].startswith('dir-') for n in package['nodes']),0)
+            self.assertEqual(sum(n['id'].startswith('catalog-') for n in package['nodes']),1)
 
 
 if __name__ == '__main__':

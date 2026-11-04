@@ -262,6 +262,7 @@ def build(extraction,structure,folder,title):
                 mapping[a['id']]=aliases[a['id']];continue
             ancestors=[g['parent'] for g in groups if g['parent']<i<=g['through']]
             parent=atoms[max(ancestors)]['id'] if ancestors else d['id']
+            parent=title_nodes.get(parent,parent)
             parent=aliases.get(parent,parent)
             nodes.append({'id':a['id'],'parentId':parent,'document':False,'text':runs[a['id']]});mapping[a['id']]=a['id']
     bundle={'schemaVersion':1,'packageId':'material.'+extraction['source_sha256'][:24]+'.v1','title':title,
