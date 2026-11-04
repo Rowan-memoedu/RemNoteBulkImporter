@@ -15,7 +15,7 @@ from .source_images import math_audit, source_representation, image_aliases
 
 def markdown_visible_with_math(text, parser):
     """Project prose formatting as a whole; math must not split ** wrappers."""
-    from .render import math_split
+    from .render import math_split,inline_markup
     formulas={};pieces=[]
     for kind,value,_ in math_split(text):
         if kind=='latex':
@@ -23,7 +23,7 @@ def markdown_visible_with_math(text, parser):
             require(marker not in text,'Ambiguous source coverage marker')
             formulas[marker]=value;pieces.append(marker)
         else:pieces.append(value)
-    visible=BeautifulSoup(parser.renderInline(''.join(pieces)),'html.parser').get_text()
+    visible=BeautifulSoup(inline_markup(''.join(pieces),parser),'html.parser').get_text()
     for marker,value in formulas.items():visible=visible.replace(marker,value)
     return visible
 
@@ -78,6 +78,9 @@ def validate_image_fallbacks(extraction,structure,bundle,runs,folder):
 
 
 def validate(folder):
+    if (folder/'lecture-source.json').exists():
+        from lectures.validate import validate as validate_lecture
+        return validate_lecture(folder)
     extraction=load(folder/'extraction.json');structure=load(folder/'structure.json');bundle=load(folder/'package.json')
     if extraction.get('metadata',{}).get('adapter')=='publish-snapshot':
         from .publish_snapshot import audit_snapshot

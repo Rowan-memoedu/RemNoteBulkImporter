@@ -13,7 +13,7 @@ Source: `D:/Projects/RemNoteBulkImporter`. Build artifacts: `D:/Artifacts/RemNot
 - Report completion only after readback checks document flags, hierarchy, order, text, images, and reference targets.
 - One external import submission runs internal SDK operations incrementally; it does not bypass RemNote rate limits or promise a single global transaction.
 
-Initial consumer: a local Math Academy course export. Conversion remains separate from the generic importer.
+Three consumers share the same importer: [general materials](consumers/material-workflow.md), [Math Academy courses](consumers/course-workflow.md), and [subject lectures](consumers/lecture-workflow.md). Lecture imports extend the complete material workflow with source-order categories, original-image question/answer fields and user feedback before reusing a new material form. Conversion remains separate from the generic importer.
 
 ## Install locally
 

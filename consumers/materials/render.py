@@ -23,10 +23,36 @@ from .common import HYPER, REPO, file_sha, key, load, require, save, sha
 from .source_images import math_audit, source_representation, image_aliases
 
 sys.path.insert(0,str(HYPER))
-from outline import rich, preview_html, validate_svg
+from outline import rich, preview_html, validate_svg, INLINE
 from table_latex import table_latex
 
 MD=MarkdownIt('commonmark',{'html':True}).enable('strikethrough')
+
+
+def inline_markup(text,parser=MD):
+    """Keep angle-bracket notation literal unless it is real inline markup.
+
+    OCR prose such as <x> defines an operator; treating it as an unknown HTML
+    element loses the very notation being defined. Explicit HTML inputs retain
+    their separate strict adapter. Code spans and autolinks are parser tokens,
+    so neither is escaped by this rule.
+    """
+    tokens=parser.parseInline(text);children=[c for t in tokens for c in t.children or []]
+    parsed={};stacks={};paired=set()
+    for i,token in enumerate(children):
+        if token.type!='html_inline':continue
+        match=re.match(r'<(/?)([A-Za-z][\w-]*)\b',token.content)
+        if not match:continue
+        closing,name=match[1],match[2].lower()
+        parsed[i]=(name,closing)
+        if closing:
+            if stacks.get(name):paired.update((i,stacks[name].pop()))
+        else:stacks.setdefault(name,[]).append(i)
+    for i,(name,closing) in parsed.items():
+        token=children[i]
+        if name not in INLINE or (name not in {'br','img','source'} and i not in paired):
+            token.content=html.escape(token.content,quote=False)
+    return parser.renderer.render(tokens,parser.options,{})
 
 
 def math_split(text, strict=False):
@@ -128,7 +154,7 @@ def segments(text,assets,base,raw_html=False,literal=False,equation=False):
                 marker='RBI_MATH_'+str(len(formulas))+'_TOKEN'
                 formulas[marker]=(value,block);joined.append(marker)
             else:joined.append(value)
-        soup=BeautifulSoup(MD.renderInline(''.join(joined)),'html.parser')
+        soup=BeautifulSoup(inline_markup(''.join(joined)),'html.parser')
         for node in list(soup.find_all(string=True)):
             value=str(node)
             for marker,(math,block) in formulas.items():

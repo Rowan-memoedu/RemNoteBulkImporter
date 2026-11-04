@@ -32,6 +32,16 @@ class MaterialTests(unittest.TestCase):
         inline=segments('Use `$HOME$` literally; then $x^2$.',self.assets,self.folder)
         self.assertEqual([s['value'] for s in inline if s['kind']=='latex'],['x^2'])
 
+    def test_angle_operator_notation_is_not_html_and_balanced_markup_survives(self):
+        text='Define <q> as an operator, with <b>=2. Keep `<q>` literal and <b>bold</b>.'
+        # An unmatched unknown tag must preserve its visible spelling; paired
+        # supported HTML and code retain their existing representation.
+        result=segments(text,self.assets,self.folder)
+        visible=''.join(s.get('value','') for s in result)
+        self.assertIn('Define <q> as an operator, with <b>=2.',visible)
+        self.assertIn('`<q>`',visible);self.assertIn('**bold**',visible)
+        self.assertEqual(segments('The operator <b>=2.',self.assets,self.folder),[{'kind':'text','value':'The operator <b>=2.'}])
+
     def test_meaningful_headers_and_empty_ocr(self):
         blocks=[{'type':'text','text':'Body','page_idx':0,'bbox':[0,200,200,300]},
                 {'type':'header','text':'2.1 Methods','page_idx':0,'bbox':[0,50,200,90]},
