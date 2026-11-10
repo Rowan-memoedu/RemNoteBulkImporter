@@ -48,7 +48,7 @@ test('real MCP transport supports preflight and one-job submission; blocks path/
   let socket;
   try{
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
-    assert.equal((await client.listTools()).tools.length,6);
+    assert.deepEqual((await client.listTools()).tools.map(t=>t.name).sort(),['bulk_import_status','bulk_import_prepare','bulk_import_start','bulk_import_job','bulk_import_pause','bulk_import_restructure','selective_native_read','selective_native_prepare','selective_native_step'].sort());
     assert.equal((await client.callTool({name:'bulk_import_status',arguments:{}})).structuredContent.connected,false);
     const invalid=await client.callTool({name:'bulk_import_prepare',arguments:{packagePath:path.join(imports,'..','outside.json')}});assert.equal(invalid.isError,true);
     const prepared=(await client.callTool({name:'bulk_import_prepare',arguments:{packagePath:file}})).structuredContent;assert.equal(prepared.status,'prepared');

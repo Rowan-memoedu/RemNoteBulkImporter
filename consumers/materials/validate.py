@@ -78,6 +78,9 @@ def validate_image_fallbacks(extraction,structure,bundle,runs,folder):
 
 
 def validate(folder):
+    if (folder/'outline-source.json').exists():
+        from .source_outline import validate as validate_outline
+        return validate_outline(folder)
     if (folder/'lecture-source.json').exists():
         from lectures.validate import validate as validate_lecture
         return validate_lecture(folder)

@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--parent-rem-id')
     parser.add_argument('--replace-root',help='Explicitly replace this completed source root; keep the old tree recoverable')
     parser.add_argument('--archive-parent-rem-id',help='Exact library-root recovery container for the replaced tree')
-    parser.add_argument('--layout',choices=['document','mindmap'],default='document',help='mindmap follows proved vector PDF connectors instead of linear reading order')
+    parser.add_argument('--layout',choices=['document','mindmap','outline'],default='document',help='outline preserves an authored Markdown tree; mindmap follows proved vector PDF connectors')
     parser.add_argument('--catalog',help='Editorial catalog JSON for a frozen website snapshot; every source page must be placed')
     args=parser.parse_args()
     if args.phase=='status':

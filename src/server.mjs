@@ -1,7 +1,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import {readFile,writeFile,mkdir,rename,realpath,readdir} from 'node:fs/promises';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,randomBytes} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {WebSocketServer,WebSocket} from 'ws';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -12,9 +12,14 @@ import {VERSION} from './version.mjs';
 import {managedMediaRoots,verifyManagedImage} from './media.mjs';
 import {planStructureChange} from './restructure.mjs';
 import {atomicJSON} from './atomic-json.mjs';
+import {selectiveTools} from './selective-server.mjs';
 
 export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteBulkImporter/plugin',importRoot='D:/Artifacts/RemNoteBulkImporter/packages',stateRoot='D:/AppData/RemNoteBulkImporter'}={}) {
   for(const dir of [importRoot,stateRoot])await mkdir(dir,{recursive:true});
+  const tokenFile=path.join(stateRoot,'sandbox-transport.json');
+  let sandboxToken;
+  try{sandboxToken=JSON.parse(await readFile(tokenFile,'utf8')).token;}
+  catch(error){if(error.code!=='ENOENT')throw error;sandboxToken=randomBytes(32).toString('hex');await writeFile(tokenFile,JSON.stringify({token:sandboxToken}),{flag:'wx',mode:0o600});}
   let bridge=null,identity=null,active=null,activeAssets=null;
   const pending=new Map(),jobs=new Map();
   const atomic=atomicJSON;
@@ -25,9 +30,9 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
   const jobFile=id=>path.join(stateRoot,`${id}.job.json`);
   const persist=job=>atomic(jobFile(job.jobId),job);
   const summary=job=>{const {planPath,result,mediaAudit,...rest}=job;return {...rest,verifiedManagedAssets:Object.keys(mediaAudit??{}).length,...(result?{result:{status:result.status,rootRemId:result.rootRemId,verified:result.verified,nodes:result.nodes,documents:result.documents,references:result.references,assets:result.assets}}:{})};};
-  const rpc=(type,data={})=>new Promise((resolve,reject)=>{
+  const rpc=(type,data={},timeoutMs=20000)=>new Promise((resolve,reject)=>{
     if(!bridge || bridge.readyState!==WebSocket.OPEN){reject(new Error('Bulk Importer plugin is not connected'));return;}
-    const id=randomUUID(),timer=setTimeout(()=>{pending.delete(id);reject(new Error('Plugin reply timed out; inspect job before retrying'));},20000);
+    const id=randomUUID(),timer=setTimeout(()=>{pending.delete(id);reject(new Error('Plugin reply timed out; inspect job before retrying'));},timeoutMs);
     pending.set(id,{resolve,reject,timer});bridge.send(JSON.stringify({type,id,...data}));
   });
   const status=async()=>({connected:!!bridge,plugin:identity,...(bridge?await rpc('status'):{}),activeJob:active});
@@ -76,12 +81,16 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     return start({jobId:job.jobId,parentRemId:base.parentRemId});
   };
   const toolResult=data=>({content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data});
+  const selective=selectiveTools({rpc,importRoot,stateRoot,isIdle:()=>!active});
   const makeMcp=()=>{
     const mcp=new McpServer({name:'remnote-bulk-importer',version:VERSION});
     const register=(name,description,inputSchema,fn)=>mcp.registerTool(name,{description,inputSchema},async(args)=>{
       try{return toolResult(await fn(args));}catch(e){return {isError:true,content:[{type:'text',text:e instanceof Error?e.message:String(e)}]};}
     });
     register('bulk_import_status','Read plugin connection, current knowledge base and active import status.',{},status);
+    register('selective_native_read','Read exact native Rem snapshots in the explicitly named current KB. No enumeration and no writes.',{kbId:z.string(),remIds:z.array(z.string()).min(1).max(24),shallow:z.boolean().optional()},selective.read);
+    register('selective_native_prepare','Validate a selected native tree package and save an immutable local snapshot; no RemNote writes.',{packagePath:z.string()},selective.prepare);
+    register('selective_native_step','Copy one batch only into a newly owned subtree in the package destination KB; preserve native text, hierarchy and mapped references. Verify every node before completion. Folder-display variance is strict by default; opt in only when authorized by the user.',{jobId:z.string(),phase:z.enum(['create','write','verify']),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(12).optional(),allowFolderDisplayDifference:z.boolean().optional()},selective.step);
     register('bulk_import_prepare','Validate an entire source-neutral local package without RemNote writes; persist an immutable snapshot. Package path stays within the configured D: import directory.',{packagePath:z.string()},prepare);
     register('bulk_import_start','Submit a prepared package as one resumable import job. Creates only a new subtree; no deletion or existing-note replacement.',{jobId:z.string().regex(/^[a-f0-9]{64}$/),parentRemId:z.string().min(1).nullable().optional()},start);
     register('bulk_import_job','Read compact progress and final audit counts. Completion requires exact full readback.',{jobId:z.string().regex(/^[a-f0-9]{64}$/)},async({jobId})=>{const job=jobs.get(jobId);if(!job)throw new Error('Unknown job');return summary(job);});
@@ -91,7 +100,7 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
   };
   const server=http.createServer(async(req,res)=>{
     const host=req.headers.host;
-    if(!host || !['127.0.0.1','localhost'].includes(host.split(':')[0])){res.writeHead(403).end();return;}
+    if(!host || !['127.0.0.1','localhost','[::1]'].some(name=>host===`${name}:${server.address().port}`)){res.writeHead(403).end();return;}
     const url=new URL(req.url,'http://localhost');
     if(url.pathname==='/mcp'){
       // MCP is for local clients. No browser CORS and no DNS-rebinding access.
@@ -110,6 +119,16 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
       const data=await readFile(path.join(buildRoot,file));
       res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Cache-Control','no-store');
       res.setHeader('Content-Type',file.endsWith('.json')?'application/json':file.endsWith('.js')?'text/javascript':'text/html');
+      if(file==='index.html'){
+        res.removeHeader('Access-Control-Allow-Origin');
+        res.setHeader('Content-Security-Policy','frame-ancestors app://js https://www.remnote.com https://remnote.com');
+        let html=data.toString('utf8');
+        if(req.headers['sec-fetch-dest']==='iframe'&&req.headers['sec-fetch-mode']==='navigate'){
+          const seed='<script>globalThis.__REMNOTE_TRANSPORT_TOKEN='+JSON.stringify(sandboxToken).replace(/</g,'\\u003c')+';</script>';
+          const index=html.indexOf('<script');html=index>=0?html.slice(0,index)+seed+html.slice(index):html+seed;
+        }
+        res.end(req.method==='HEAD'?undefined:html);return;
+      }
       res.end(req.method==='HEAD'?undefined:data);
     }catch{res.writeHead(503).end('Build plugin before loading it');}
   });
@@ -117,17 +136,18 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
   server.on('upgrade',(req,socket,head)=>{
     const actualPort=server.address().port;
     const origins=new Set([`http://localhost:${actualPort}`,`http://127.0.0.1:${actualPort}`,'https://www.remnote.com','https://remnote.com','https://plugins.remnote.com','https://beta.remnote.com']);
-    if(req.url!=='/bridge'||!origins.has(req.headers.origin)||bridge){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
+    if(req.url!=='/bridge'||(!origins.has(req.headers.origin)&&req.headers.origin!=='null')||bridge){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');socket.destroy();return;}
     wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req));
   });
-  wss.on('connection',socket=>{
+  wss.on('connection',(socket,request)=>{
     bridge=socket;let greeted=false;
     const helloTimer=setTimeout(()=>{if(!greeted)socket.close(1008,'Missing hello');},5000);
     let queued=Promise.resolve();
     socket.on('message',raw=>{
       queued=queued.then(async()=>{
         const m=JSON.parse(raw.toString());
-        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0','0.1.1','0.1.2','0.1.3','0.1.4','0.1.5','0.1.6','0.1.7','0.1.8','0.1.9','0.1.10',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
+        if(!greeted&&request.headers.origin==='null'&&m.token!==sandboxToken)throw new Error('Sandbox authentication required');
+        if(!greeted){if(m.type!=='hello'||m.pluginId!=='remnote-bulk-importer'||!['0.1.0','0.1.1','0.1.2','0.1.3','0.1.4','0.1.5','0.1.6','0.1.7','0.1.8','0.1.9','0.1.10','0.1.11',VERSION].includes(m.version))throw new Error('Incompatible plugin');greeted=true;clearTimeout(helloTimer);identity={id:m.pluginId,version:m.version};return;}
         if(m.type==='reply'){
           const entry=pending.get(m.id);if(entry){clearTimeout(entry.timer);pending.delete(m.id);m.error?entry.reject(new Error(m.error)):entry.resolve(m.result);}return;
         }
@@ -158,6 +178,11 @@ export async function createService({port=43106,buildRoot='D:/Artifacts/RemNoteB
     });
   });
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});
+  const peer=http.createServer((req,res)=>server.emit('request',req,res));
+  peer.on('upgrade',(req,socket,head)=>server.emit('upgrade',req,socket,head));
+  const controller=new AbortController();server.once('close',()=>controller.abort());
+  try{await new Promise((resolve,reject)=>{peer.once('error',reject);peer.listen({host:'::1',port:server.address().port,ipv6Only:true,signal:controller.signal},resolve);});}
+  catch(error){server.close();throw error;}
   return {port:server.address().port,jobs,close:async()=>{bridge?.close();wss.close();await new Promise(r=>server.close(r));}};
 }
 
