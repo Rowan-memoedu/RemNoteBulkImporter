@@ -4,6 +4,7 @@ import { sdkAdapter } from './sdk-adapter';
 import { VERSION } from './version.mjs';
 import { sdkMonitor } from './sdk-monitor.mjs';
 import { restructureImport } from './restructure.mjs';
+import { snapshotNative, copyNativeBatch, SELECTIVE_PROTOCOL } from './selective-native.mjs';
 
 let ws: WebSocket|undefined;
 let timer: ReturnType<typeof setTimeout>|undefined;
@@ -18,10 +19,13 @@ async function activate(plugin:ReactRNPlugin) {
   await plugin.app.registerCommand({id:'bulk-import-status',name:'批量导入：查看连接状态',quickCode:'rbi',action:async()=>{
     await plugin.app.toast(busy?'批量导入正在运行':ws?.readyState===WebSocket.OPEN?'批量导入已连接本地服务':'批量导入未连接本地服务');
   }});
-  const connect=()=>{
+  const connect=async()=>{
+    if(stopped)return;
+    const token=(globalThis as typeof globalThis & {__REMNOTE_TRANSPORT_TOKEN?:string}).__REMNOTE_TRANSPORT_TOKEN;
+    if(!token){if(!stopped)timer=setTimeout(connect,2500);return;}
     if(stopped)return;
     ws=new WebSocket(address);
-    ws.onopen=()=>send({type:'hello',pluginId:'remnote-bulk-importer',version:VERSION,busy});
+    ws.onopen=()=>send({type:'hello',token,pluginId:'remnote-bulk-importer',version:VERSION,busy});
     ws.onmessage=async(event)=>{
       let m:any;
       try { m=JSON.parse(event.data); } catch { return; }
@@ -30,8 +34,14 @@ async function activate(plugin:ReactRNPlugin) {
       }
       if(m.type==='pause'){pause=true;return;}
       if(m.type==='status'){
-        try {const kb=await plugin.kb.getCurrentKnowledgeBaseData();send({type:'reply',id:m.id,result:{kbId:kb._id,kbName:kb.name,busy,diagnostics:monitor.snapshot()}});}
+        try {const kb=await plugin.kb.getCurrentKnowledgeBaseData();send({type:'reply',id:m.id,result:{kbId:kb._id,kbName:kb.name,busy,selectiveProtocol:SELECTIVE_PROTOCOL,diagnostics:monitor.snapshot()}});}
         catch(e){send({type:'reply',id:m.id,error:String(e)});}return;
+      }
+      if(m.type==='selective-read'||m.type==='selective-copy'){
+        if(busy||monitor.snapshot().restartRequired){send({type:'reply',id:m.id,error:'Plugin is busy or fenced after a timeout'});return;}
+        busy=true;
+        try{const fn=m.type==='selective-read'?snapshotNative:copyNativeBatch;send({type:'reply',id:m.id,result:await fn(plugin,m,monitor)});}
+        catch(e){send({type:'reply',id:m.id,error:e instanceof Error?e.message:String(e)});}finally{busy=false;}return;
       }
       if(m.type!=='import')return;
       if(monitor.snapshot().restartRequired){send({type:'reply',id:m.id,error:'Reload the plugin after an SDK timeout before resuming'});return;}

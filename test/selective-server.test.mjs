@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';
+import {selectiveTools} from '../src/selective-server.mjs';
+test('selective service rejects changed immutable packages, escape paths, stale plugins and incomplete phases',async()=>{
+  const root=await mkdtemp('D:/Artifacts/RemNoteBulkImporter-test-'),importRoot=path.join(root,'packages'),stateRoot=path.join(root,'state');await mkdir(importRoot);await mkdir(stateRoot);
+  const plan={schemaVersion:1,title:'independent fixture',sourceKbId:'source',destinationKbId:'target',nodes:[{id:'alpha',parentId:null,type:0,text:['one'],backText:null,meta:{document:false},refs:[],tags:[],sources:[]}]};
+  const file=path.join(importRoot,'fixture.json');await writeFile(file,JSON.stringify(plan));
+  let protocol=7,mutations=0;const rpc=async(type,args)=>{if(type==='status')return {selectiveProtocol:protocol,busy:false};if(type==='selective-copy'){mutations++;return {mapping:{alpha:'created'},rootId:'root',count:args.nodes.length};}return {nodes:[]};};
+  const t=selectiveTools({rpc,importRoot,stateRoot,isIdle:()=>true}),p=await t.prepare({packagePath:file});
+  await assert.rejects(t.prepare({packagePath:path.join(root,'outside.json')}));
+  await assert.rejects(t.step({jobId:p.jobId,phase:'verify'}),/Allocate/);
+  protocol=0;await assert.rejects(t.read({kbId:'source',remIds:['alpha']}),/Reload/);protocol=7;
+  await t.step({jobId:p.jobId,phase:'create'});
+  await assert.rejects(t.step({jobId:p.jobId,phase:'verify'}),/Write all/);
+  await t.step({jobId:p.jobId,phase:'write'});assert.equal((await t.step({jobId:p.jobId,phase:'verify'})).complete,true);
+  const rewritten=await t.step({jobId:p.jobId,phase:'write',allowFolderDisplayDifference:true});
+  assert.equal(rewritten.complete,false);assert.equal(rewritten.done.verify,0);
+  assert.equal((await t.step({jobId:p.jobId,phase:'verify'})).complete,true);
+  const immutable=path.join(stateRoot,`${p.jobId}.selective-package.json`),tampered=JSON.parse(await readFile(immutable));tampered.nodes[0].text=['changed'];await writeFile(immutable,JSON.stringify(tampered));
+  await assert.rejects(t.step({jobId:p.jobId,phase:'write'}),/Immutable/);assert.equal(mutations,5);
+});

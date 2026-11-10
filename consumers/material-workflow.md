@@ -24,6 +24,23 @@ node consumers/material-workflow.mjs import 'D:\Downloads\资料.pdf' --kb-id '<
 
 默认产物在 `D:\Artifacts\RemNoteBulkImporter\materials\<来源哈希前缀>`。正文见 `markdown/阅读目录.md`、`markdown/分篇`、`markdown/全书大纲.md` 和 `preview.html`；检查证据独立保存在 JSON 文件中。`validation.json` 代表本地验证，只有 `completion.json` 及 MCP 完成回执代表实际导入完成。
 
+### 已生产的 Markdown 数理讲义
+
+已有完整嵌套大纲、无需重新分类或改写的讲义，沿用同一入口并指定 `--layout outline`：
+
+```powershell
+node consumers/material-workflow.mjs prepare '<原始讲义.md>' --layout outline --output '<D:/Artifacts 下的产物目录>'
+node consumers/material-workflow.mjs import '<原始讲义.md>' --layout outline --output '<同一目录>' --kb-id '<已核对库 ID>'
+```
+
+使用预览 HTML 对应的原始 Markdown，不解析渲染后的公式占位符。初始 H1 作为唯一导入根标题，后续标题和列表按源父子关系成为普通节点；一个列表项对应一个 Rem，其多段说明、多行公式和代码仍在同一节点。编号列表保留原编号。公式沿用原生 LaTeX，图片沿用已有托管媒体及字节校验，不添加批注、卡片、分类或题目字段，不调用模型重新判断大纲。
+
+本地准备重新解析原文件，逐项比较顺序、父节点、正文、换行、公式模式和媒体，再运行标准包校验与 KaTeX。`source-outline.md` 是原稿副本；离线 `preview.html` 和 JSON 证据与正文分开。导入继续使用既有来源去重、目标库检查、单写入者、断点恢复及全部节点/媒体回读。自动通过不代替用户对显示效果的反馈。
+
+当前适配列表大纲及其节点内连续段落、公式、围栏代码和本地图片。父节点正文在子列表后继续、缩进不明、未闭合公式/代码、多 H1 根、块引用、表格或缺失图片会停止；这些结构需要先扩展适配，不能悄悄改写或丢弃。该模式与基于原 PDF 裁图并分类的学科讲义入口分开，后者的题面/答案图片规则不用于改造已生产的 Markdown 正文。
+
+Mermaid 围栏图复用既有阅读渲染器的本地 Mermaid 库与无界面 Chrome 运行时，渲染为托管图片，保留节点归属和图内文字、连线。原始代码、库/渲染器指纹与图片哈希留在 `diagrams/`，验收重新核对后再进入标准媒体字节回读；普通围栏代码仍为可编辑代码。不会操作用户的浏览器窗口。
+
 ### 网站页面集合与目录整理
 
 Obsidian Publish 等网站已有原始 Markdown 时，先冻结已授权范围的页面和媒体，再把 `snapshot.json` 直接交给通用入口。旧 `materials.publish_snapshot` 命令继续兼容：
@@ -127,6 +144,7 @@ OCR 公式出现未闭合定界符或无法通过 KaTeX 时，保留原始识别
 
 ```powershell
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/materials_test.py
+& 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/source_outline_test.py
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/publish_snapshot_test.py
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/material_catalog_test.py
 & 'D:\AppData\RemNoteBulkImporter\material-venv\Scripts\python.exe' test/mindmap_test.py

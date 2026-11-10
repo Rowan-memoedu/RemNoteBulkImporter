@@ -5,6 +5,9 @@ from .common import load, require, save
 
 
 def source_kind(source,layout='document'):
+    if layout=='outline':
+        require(source.suffix.lower() in ('.md','.markdown'),'Outline mode requires the original Markdown, not its rendered HTML')
+        return 'source-outline'
     if layout=='mindmap':
         require(source.suffix.lower()=='.pdf','Mind-map mode currently requires a vector PDF')
         return 'vector-mindmap'
@@ -23,6 +26,9 @@ def run_special(args,source,folder,kind):
         if args.phase=='validate':return validate(folder)
         from .delivery import deliver
         return deliver(folder,args.kb_id,args.parent_rem_id,getattr(args,'replace_root',None),getattr(args,'archive_parent_rem_id',None))
+    if kind=='source-outline':
+        from .source_outline import prepare
+        return prepare(source,folder,args.title,extract_only=args.phase=='extract')
     if kind=='publish-snapshot':
         from .publish_snapshot import prepare
         return prepare(source,folder,args.title or load(source).get('title') or '网站资料',getattr(args,'catalog',None),extract_only=args.phase=='extract')

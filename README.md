@@ -2,7 +2,6 @@
 
 协作开发、Agent 提交与合并规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-
 Independent personal RemNote plugin and loopback MCP service for importing a prepared, source-neutral document tree in one resumable job. It does not depend on or modify RemNote MCP Automation Bridge.
 
 Source: `D:/Projects/RemNoteBulkImporter`. Build artifacts: `D:/Artifacts/RemNoteBulkImporter`. Runtime state: `D:/AppData/RemNoteBulkImporter`. Imported course data and private knowledge-base contents stay outside Git.
@@ -14,11 +13,14 @@ Source: `D:/Projects/RemNoteBulkImporter`. Build artifacts: `D:/Artifacts/RemNot
 - Limit concurrency, checkpoint small transactions, resume the same immutable package, and reject changed inputs or knowledge-base identity.
 - Create only a new import subtree. Never overwrite pre-existing user material or generate practice cards.
 - Report completion only after readback checks document flags, hierarchy, order, text, images, and reference targets.
+- Validate source selection separately from package readback. `src/reference-closure.mjs` expands complete reference-definition subtrees, explicit semantic context units and ancestor paths, even when a definition already has a destination ID. It refuses missing source snapshots, excludes generated query infrastructure with a receipt, and reports references to existing anchors explicitly. It never treats a flattened definition list as complete source coverage.
 - One external import submission runs internal SDK operations incrementally; it does not bypass RemNote rate limits or promise a single global transaction.
 
 Three consumers share the same importer: [general materials](consumers/material-workflow.md), [Math Academy courses](consumers/course-workflow.md), and [subject lectures](consumers/lecture-workflow.md). Lecture imports extend the complete material workflow with source-order categories, original-image question/answer fields and user feedback before reusing a new material form. Conversion remains separate from the generic importer.
 
 ## Install locally
+
+The existing Windows logon task `RemNoteBulkImporter` keeps the original service available on port 43106. Plugin assets listen on both loopback families, retaining the localhost install URL. Opaque sandbox WebSockets must authenticate with a random credential supplied only in trusted RemNote iframe HTML; that HTML has no CORS and restricts frame ancestors. Public JavaScript contains no credential. Restoring this connection does not submit or replay an import job.
 
 Requires Node 22+ and the official RemNote plugin SDK. `npm ci` restores pinned dependencies.
 
@@ -102,11 +104,11 @@ The engine tests cover forward and cyclic content references, hierarchy/order, p
 
 The 0.1.9 suite has 54 passing tests, including batched structure creation, partial ordering transactions, failed-checkpoint recovery, order-only changes, annotation placement and exact preservation of retained IDs and content. Ordering uses small transactions and batches metadata checkpoints, re-reading committed positions after interruptions. Its independent live 44-node canary passed complete readback; the original MCP independently confirmed all 11 annotation parents begin with the annotation branch. The live course's private receipts and independent readbacks stay under the D: artifact/state roots rather than in Git.
 
-## Math Academy consumer
-
 ## Document, website and mind-map materials
 
 `node consumers/material-workflow.mjs prepare|validate|import <source> --output <run-directory>` handles PDF, images, Office, EPUB, Markdown, text, local HTML and frozen website Markdown snapshots through one pipeline. Website snapshots support a complete editorial catalog via `--catalog <plan.json>` while preserving page bodies, IDs and references. Vector mind-map PDFs use `--layout mindmap`: source connectors determine hierarchy, repeated page roots and chapter occurrences merge into one book tree, and text/math screenshots become editable text and native formulas after pixel review. Teaching figures use opaque, mask-composited source images; full-page duplicate views stay outside notes. Disconnected or cyclic graphs fail explicitly. [Material workflow, source formats and recovery](consumers/material-workflow.md) documents commands, source audits and recoverable corrective replacement. Only explicit `import` writes through the existing MCP engine; completion requires all-node and managed-image readback.
+
+## Math Academy consumer
 
 `npm run course -- prepare ...` now runs the complete local conversion, math audit, source-SVG fallback, diagram rendering, native prerequisite packaging, annotation layout and two independent source checks. Use explicit `import` with the expected KB ID to submit the prepared package through the existing MCP engine and wait for full readback. [Course workflow commands and recovery](consumers/course-workflow.md) document the arguments, stage fingerprints, completed-job adoption and duplicate prevention. Parallel preparation uses separate artifact directories; RemNote imports must run serially.
 
@@ -133,3 +135,9 @@ The converter uses the bundled desktop Python runtime (Pillow), existing Tectoni
 The current local course package audit is `D:/Artifacts/RemNoteBulkImporter/course-154/package-audit.json`. It verifies all source Topic identities, direct prerequisite edges and lesson steps separately from the generic SDK readback. Runtime completion is tracked by the MCP job; a prepared package or a successful conversion audit is not a completed RemNote import.
 
 Official references: [Rem API](https://plugins.remnote.com/advanced/rem_api), [RichText](https://plugins.remnote.com/advanced/rich_text), [SDK changelog and transaction warning](https://plugins.remnote.com/CHANGELOG), [local plugin setup](https://plugins.remnote.com/getting-started/quick_start_guide).
+
+## Selective native migration
+
+Version 0.1.12 adds three local MCP tools. `selective_native_read` snapshots only explicitly supplied Rem IDs in an expected source KB; it never enumerates or exports a whole library. `selective_native_prepare` validates a source-neutral selected-tree package within the existing package directory. `selective_native_step` allocates, writes and fully verifies bounded batches in the explicitly bound destination KB. It creates a new owned root and never writes existing user Rems. Native RichText, document/paragraph flags, flashcard definition and direction, mapped internal references, user tags, sources and ordinary portals are retained; practice history is excluded. Source snapshots, packages and mappings remain local outside Git. Cross-KB switching uses the desktop's native chooser because the public SDK exposes current-KB identity only. Snapshot preparation must resolve every reference dependency and use parent-before-child order before any creation. Resume refuses missing, reparented or edited owned content; final completion requires all-node native readback, exact child order and metadata. Unsupported Rem or portal types fail before writes.
+
+Metadata is strict by default. When the user accepts folder display differences, `scripts/selective-migration.mjs run <package> --allow-folder-display-difference` records that policy for this job, skips the coupled SDK folder setter and records any folder difference during verification. Document status and every other checked field remain strict. Rewriting nodes invalidates their earlier verification before mutation. Native image percentages unsupported by the SDK are omitted only when exact positive pixel dimensions are available; managed URL, pixels, caption and image ID remain, and `scripts/audit-selective-media.mjs` independently retrieves and hashes managed image bytes. Immutable source snapshots retain the original image fields.
