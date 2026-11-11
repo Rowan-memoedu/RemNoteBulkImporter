@@ -52,12 +52,16 @@ def parse(text, fallback_title):
                      'parts':[value],'column':bullet.start(4),'indent':indent,'line':number}
             nodes.append(current);stack.append(current)
         else:
-            # A continuation belongs to its actual list item. Parent text after
-            # children cannot be represented in the same order as a native Rem.
+            # A paragraph after nested items must follow those items in the
+            # Rem tree. Its original list item still owns the paragraph.
             if stack:
                 owner=next((n for n in reversed(stack) if indent>=n['column']),None)
                 require(owner is not None,f'Unowned prose at line {number}')
-                require(owner is current,f'Parent continuation after child list at line {number}')
+                if owner is not current and current.get('continuation_of')!=owner['id']:
+                    while stack[-1] is not owner:stack.pop()
+                    current={'id':f'a{len(nodes):06d}','parentId':owner['id'],'parts':[],
+                             'column':owner['column'],'line':number,'continuation_of':owner['id']}
+                    nodes.append(current)
             require(current is not None,f'Outline mode needs a heading/list node before prose (line {number})')
             require(not re.match(r'^(?:>|\|)',body),'Block quotes/tables require the general document adapter')
             current['parts'].append(line[current['column']:])
@@ -76,7 +80,7 @@ def rich_text(text,assets,base):
     from .render import segments, math_split
     # The shared HTML converter folds whitespace. Explicit br elements retain
     # authored paragraph/newline boundaries while math stays byte-for-byte TeX.
-    result=[];prose=[];code=None;language=None;code_lines=[]
+    result=[];prose=[];code=None;code_indent=0;language=None;code_lines=[]
     def flush():
         if not prose:return
         value='\n'.join(prose);parts=[]
@@ -88,14 +92,16 @@ def rich_text(text,assets,base):
         result.extend(segments(''.join(parts),assets,base));prose.clear()
     for line in text.split('\n'):
         if code:
-            if re.fullmatch(re.escape(code[0])+r'{'+str(len(code))+r',}\s*',line):
+            if re.fullmatch(r' {0,3}'+re.escape(code[0])+r'{'+str(len(code))+r',}\s*',line):
                 content='\n'.join(code_lines)+'\n'
                 result.append({'kind':'mermaid' if language=='mermaid' else 'code','value':content})
                 code=None;language=None;code_lines=[]
-            else:code_lines.append(line)
-        elif match:=re.fullmatch(r'(`{3,}|~{3,})[^`~]*',line):
-            flush();code=match[1]
-            info=line[len(code):].strip().split(maxsplit=1)
+            else:
+                indent=len(line)-len(line.lstrip(' '))
+                code_lines.append(line[min(code_indent,indent):])
+        elif match:=re.fullmatch(r'( {0,3})(`{3,}|~{3,})([^`~]*)',line):
+            flush();code=match[2];code_indent=len(match[1])
+            info=match[3].strip().split(maxsplit=1)
             language=info[0].casefold() if info else None
         else:prose.append(line)
     require(code is None,'Unclosed code fence');flush()

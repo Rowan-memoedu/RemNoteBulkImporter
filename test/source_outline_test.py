@@ -47,11 +47,16 @@ class OutlineTests(unittest.TestCase):
         self.assertEqual(tree['nodes'][3]['text'],'4. Next')
 
     def test_ambiguous_or_incomplete_source_stops(self):
-        for text in ('- Parent\n  - Child\n\n  Later parent prose',
-                     '- Formula\n\n  $$\n  x=1',
+        for text in ('- Formula\n\n  $$\n  x=1',
                      '# One\n- A\n# Two\n- B',
                      '- Parent\n - Bad indent'):
             with self.subTest(text=text),self.assertRaises(ValueError):parse(text,'fallback')
+
+    def test_continuation_after_nested_list_preserves_order_and_owner(self):
+        text='- Conditions\n  - First\n    - Detail\n\n  Compare the cases.\n  Keep the condition.\n\n  $$\n  x>0\n  $$\n  - Second\n- Next\n'
+        nodes=parse(text,'fallback')['nodes']
+        self.assertEqual([n['parentId'] for n in nodes],[None,'a000000','a000001','a000000','a000000',None])
+        self.assertEqual(nodes[3]['text'],'Compare the cases.\nKeep the condition.\n\n$$\nx>0\n$$')
 
     def test_physics_canary_images_bold_math_and_tampering(self):
         from PIL import Image
@@ -81,7 +86,7 @@ class OutlineTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):convert(self.source,self.output)
 
     def test_mermaid_preserves_source_as_a_child_before_following_content(self):
-        self.source.write_text('# Water cycle\n- Process\n\n  ```mermaid\n  flowchart LR\n    A[Evaporation] --> B[Condensation]\n    B --> C[Rain]\n  ```\n\n  Read from left to right.\n  - Example\n',encoding='utf8')
+        self.source.write_text('# Water cycle\n- Process\n\n    ```mermaid\n    flowchart LR\n      A[Evaporation] --> B[Condensation]\n      B --> C[Rain]\n    ```\n\n  Read from left to right.\n  - Example\n',encoding='utf8')
         tree,bundle,_=convert(self.source,self.output)
         self.assertEqual(len(tree['nodes']),2)
         parent,diagram,continuation,example=bundle['nodes']
