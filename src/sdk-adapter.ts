@@ -8,6 +8,9 @@ import { imageReadbackCompatibility } from './rich-compat.mjs';
 import { imageTransportHashMatches } from './rich-hash.mjs';
 import { expectedReferenceTargets } from './expected-refs.mjs';
 
+// Identifier used by the official Mermaid plugin, including its historical spelling.
+const MERMAID_POWERUP = 'memaid_powerup';
+
 export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, verifyMedia: any, packageAssets: any={}) {
   const call=monitor.call;
   const compatibility=imageReadbackCompatibility(packageAssets,{
@@ -38,6 +41,21 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
       return rem;
     },
     transaction: <T>(fn:()=>Promise<T>) => call('app.transaction',()=>sdkTransaction((wrapped:any)=>plugin.app.transaction(wrapped),fn),180000),
+    requireMermaid: async () => {
+      if (!await call('powerup.getMermaid',()=>plugin.powerup.getPowerupByCode(MERMAID_POWERUP))) {
+        throw new Error('The official Mermaid plugin must register its Power-up in the destination knowledge base before importing diagrams');
+      }
+    },
+    markMermaid: async (rem:any) => {
+      if (!await call('rem.hasMermaid',()=>rem.hasPowerup(MERMAID_POWERUP))) {
+        await call('rem.addMermaid',()=>rem.addPowerup(MERMAID_POWERUP));
+      }
+    },
+    verifyMermaid: async (rem:any,source:string) => {
+      const [element] = rem.text ?? [];
+      return rem.text?.length === 1 && element?.code === true && element.text === source &&
+        await call('rem.hasMermaid',()=>rem.hasPowerup(MERMAID_POWERUP));
+    },
     compile: async (segments: any[], mapping: Record<string,string>, assets: Record<string,any>, legacyImages=false) => {
       const result: RichTextInterface = [];
       for(const s of segments) {
@@ -46,6 +64,7 @@ export function sdkAdapter(plugin: ReactRNPlugin, kbId: string, monitor: any, ve
           case 'text': part=[s.value];break;
           case 'markdown': part=await call('richText.parseFromMarkdown',()=>plugin.richText.parseFromMarkdown(s.value));break;
           case 'code': part=await call('richText.code',()=>plugin.richText.code(s.value,'text').value());break;
+          case 'mermaid': part=[{i:'m',text:s.value,code:true}];break;
           case 'latex': part=await call('richText.latex',()=>plugin.richText.latex(s.value,s.block).value());break;
           case 'ref': {
             if(!mapping[s.targetId]) throw new Error(`Unmapped reference ${s.targetId}`);

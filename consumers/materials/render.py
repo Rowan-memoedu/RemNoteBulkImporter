@@ -261,7 +261,7 @@ def build(extraction,structure,folder,title):
             if a['kind']=='image':
                 require(file_sha(a['path'])==a['sha256'],'Source image changed')
                 value=[{'kind':'image','assetId':assets.add_file(a['path'])}]
-            elif a['kind']=='code':value=[{'kind':'code','value':a['text']}]
+            elif a['kind'] in ('code','mermaid'):value=[{'kind':a['kind'],'value':a['text']}]
             elif a['kind']=='table':
                 value,spans=native_table(a['text'],assets,base)
                 if spans:table_spans.append(a['id'])
@@ -311,9 +311,11 @@ def markdown_text(runs,folder,prefix='_assets/'):
             filename=next((folder/'markdown/_assets').glob(s['assetId'][4:]+'.*')).name
             parts.append('![](<'+prefix+filename+'>)')
         elif s['kind']=='latex':parts.append('$$\n'+s['value']+'\n$$' if s['block'] else '$'+s['value']+'$')
-        elif s['kind']=='code':
+        elif s['kind'] in ('code','mermaid'):
             fence='`'*(max([2]+[len(x) for x in re.findall('`+',s['value'])])+1)
-            parts.append(fence+'\n'+s['value']+'\n'+fence)
+            language='mermaid' if s['kind']=='mermaid' else ''
+            separator='' if language and s['value'].endswith('\n') else '\n'
+            parts.append(fence+language+'\n'+s['value']+separator+fence)
         elif s['kind']=='ref':parts.append('[↗](<'+prefix.removesuffix('_assets/')+'全书大纲.md#'+s['targetId']+'>)')
         else:parts.append(s['value'])
     return ''.join(parts)
@@ -324,7 +326,9 @@ def local_preview(bundle, rendered_math=None):
     for node in view['nodes']:
         converted=[{'kind':'markdown','value':'<a id="'+node['id']+'"></a>'}]
         for s in node['text']:
-            converted.append({'kind':'markdown','value':'[↗](#'+s['targetId']+')'} if s['kind']=='ref' else s)
+            if s['kind']=='ref':converted.append({'kind':'markdown','value':'[↗](#'+s['targetId']+')'})
+            elif s['kind']=='mermaid':converted.append({'kind':'code','value':s['value']})
+            else:converted.append(s)
         node['text']=converted
     return preview_html(view,rendered_math)
 

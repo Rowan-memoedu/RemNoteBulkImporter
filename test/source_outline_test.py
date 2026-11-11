@@ -47,11 +47,16 @@ class OutlineTests(unittest.TestCase):
         self.assertEqual(tree['nodes'][3]['text'],'4. Next')
 
     def test_ambiguous_or_incomplete_source_stops(self):
-        for text in ('- Parent\n  - Child\n\n  Later parent prose',
-                     '- Formula\n\n  $$\n  x=1',
+        for text in ('- Formula\n\n  $$\n  x=1',
                      '# One\n- A\n# Two\n- B',
                      '- Parent\n - Bad indent'):
             with self.subTest(text=text),self.assertRaises(ValueError):parse(text,'fallback')
+
+    def test_continuation_after_nested_list_preserves_order_and_owner(self):
+        text='- Conditions\n  - First\n    - Detail\n\n  Compare the cases.\n  Keep the condition.\n\n  $$\n  x>0\n  $$\n  - Second\n- Next\n'
+        nodes=parse(text,'fallback')['nodes']
+        self.assertEqual([n['parentId'] for n in nodes],[None,'a000000','a000001','a000000','a000000',None])
+        self.assertEqual(nodes[3]['text'],'Compare the cases.\nKeep the condition.\n\n$$\nx>0\n$$')
 
     def test_physics_canary_images_bold_math_and_tampering(self):
         from PIL import Image
@@ -80,15 +85,29 @@ class OutlineTests(unittest.TestCase):
         self.source.write_text('- ![Missing](missing.png)',encoding='utf8')
         with self.assertRaises(FileNotFoundError):convert(self.source,self.output)
 
-    def test_mermaid_renders_to_verified_image_and_tampering_stops(self):
-        self.source.write_text('# Water cycle\n- Process\n\n  ```mermaid\n  flowchart LR\n    A[Evaporation] --> B[Condensation]\n    B --> C[Rain]\n  ```\n',encoding='utf8')
+    def test_mermaid_preserves_source_as_a_child_before_following_content(self):
+        self.source.write_text('# Water cycle\n- Process\n\n    ```mermaid\n    flowchart LR\n      A[Evaporation] --> B[Condensation]\n      B --> C[Rain]\n    ```\n\n  Read from left to right.\n  - Example\n',encoding='utf8')
         tree,bundle,_=convert(self.source,self.output)
-        self.assertEqual(len(tree['nodes']),1)
-        self.assertEqual(sum(s['kind']=='image' for s in bundle['nodes'][0]['text']),1)
-        self.assertFalse(any(s['kind']=='code' for s in bundle['nodes'][0]['text']))
-        self.assertEqual(convert(self.source,self.output)[1],bundle)
-        image=next((self.output/'diagrams').glob('*.png'));image.write_bytes(b'corrupt')
-        with self.assertRaisesRegex(ValueError,'rendering changed'):convert(self.source,self.output)
+        self.assertEqual(len(tree['nodes']),2)
+        parent,diagram,continuation,example=bundle['nodes']
+        self.assertEqual([n['parentId'] for n in (diagram,continuation,example)],[parent['id']]*3)
+        self.assertEqual(diagram['text'],[{'kind':'mermaid','value':'flowchart LR\n  A[Evaporation] --> B[Condensation]\n  B --> C[Rain]\n'}])
+        self.assertIn('Read from left to right.',str(continuation['text']))
+        self.assertEqual(bundle['assets'],{})
+        self.assertEqual(prepare(self.source,self.output)['info']['mermaid'],1)
+        diagram['text'][0]['kind']='code'
+        save(self.output/'package.json',bundle)
+        with self.assertRaisesRegex(ValueError,'differs'):validate(self.output)
+
+    def test_generic_markdown_and_html_recognize_mermaid_source(self):
+        from materials.local_formats import markdown_atoms,html_atoms
+        from materials.render import markdown_text
+        source='flowchart LR\nA --> B\n'
+        self.assertEqual(markdown_atoms('```mermaid\n'+source+'```',self.folder)[0]['kind'],'mermaid')
+        for wrapper in ('<pre class="mermaid">{}</pre>','<pre><code class="language-mermaid">{}</code></pre>'):
+            atom=html_atoms(wrapper.format(source),self.folder)[0]
+            self.assertEqual((atom['kind'],atom['text']),('mermaid',source))
+        self.assertEqual(markdown_text([{'kind':'mermaid','value':source}],self.folder),'```mermaid\n'+source+'```')
 
 
 if __name__=='__main__':unittest.main()

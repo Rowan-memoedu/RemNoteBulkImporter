@@ -39,7 +39,9 @@ def markdown_atoms(text, base):
             atoms.append({'kind':'text','text':value,'heading_level':heading,'list_depth':list_depth,'line':token.map[0] if token.map else None,'base':str(base),'anchors':pending})
             pending=[]
         elif token.type in ('fence','code_block'):
-            atoms.append({'kind':'code','text':token.content,'heading_level':0,'base':str(base)})
+            language=token.info.strip().split(maxsplit=1)
+            kind='mermaid' if language and language[0].casefold()=='mermaid' else 'code'
+            atoms.append({'kind':kind,'text':token.content,'heading_level':0,'base':str(base)})
         elif token.type=='html_block':
             atoms.extend(html_atoms(token.content,base))
         elif token.type=='table_open':
@@ -85,7 +87,9 @@ def html_atoms(text, base):
         if name=='table':
             atoms.append({'kind':'table','text':str(node),'heading_level':0,'base':str(base)})
         elif name=='pre':
-            atoms.append({'kind':'code','text':node.get_text(),'heading_level':0,'base':str(base)})
+            code=node.find('code',recursive=False)
+            is_mermaid='mermaid' in node.get('class',[]) or (code and 'language-mermaid' in code.get('class',[]))
+            atoms.append({'kind':'mermaid' if is_mermaid else 'code','text':node.get_text(),'heading_level':0,'base':str(base)})
         elif name and re.fullmatch('h[1-6]',name):
             atoms.append({'kind':'html','text':node.decode_contents(),'plain':node.get_text(' ',strip=True),'heading_level':int(name[1]),'base':str(base)})
         elif name in ('p','figcaption','summary') or name=='li' and not node.find(['p','ul','ol'],recursive=False):
