@@ -20,7 +20,7 @@ export function validatePackage(plan) {
   check(Array.isArray(plan.nodes) && plan.nodes.length > 0 && plan.nodes.length <= 100000, 'Expected 1..100000 nodes');
   const ids = new Set(), ordered = [], byId = new Map(), assets = plan.assets ?? {};
   exactKeys(assets, Object.keys(assets), 'assets');
-  let assetBytes = 0, textChars = 0, refs = 0, documents = 0;
+  let assetBytes = 0, textChars = 0, refs = 0, documents = 0, mermaid = 0;
   for (const [id, asset] of Object.entries(assets)) {
     check(identifier(id), 'Invalid asset ID');
     exactKeys(asset, ['mime','base64','sha256'], `asset ${id}`);
@@ -49,6 +49,11 @@ export function validatePackage(plan) {
           exactKeys(s, ['kind','value','block'], node.id);
           check(typeof s.value === 'string' && typeof s.block === 'boolean', `${node.id}: invalid latex`);
           textChars += s.value.length; break;
+        case 'mermaid':
+          exactKeys(s, ['kind','value'], node.id);
+          check(!node.document && node.text.length === 1, `${node.id}: Mermaid requires its own outline node`);
+          check(typeof s.value === 'string' && s.value.trim(), `${node.id}: Mermaid source is empty`);
+          textChars += s.value.length; mermaid++; break;
         case 'ref':
           exactKeys(s, ['kind','targetId'], node.id);
           check(identifier(s.targetId), `${node.id}: invalid reference`); refs++; break;
@@ -62,7 +67,7 @@ export function validatePackage(plan) {
   }
   check(textChars <= 64 * 1024 * 1024, 'Text exceeds 64 MiB');
   for (const node of ordered) for (const s of node.text) if(s.kind==='ref') check(ids.has(s.targetId), `${node.id}: unresolved reference ${s.targetId}`);
-  return {nodes:ordered.length,documents,references:refs,assets:Object.keys(assets).length,assetBytes,textChars};
+  return {nodes:ordered.length,documents,references:refs,assets:Object.keys(assets).length,assetBytes,textChars,...(mermaid?{mermaid}:{})};
 }
 
 export async function sha256(text) {

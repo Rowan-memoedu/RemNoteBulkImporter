@@ -38,7 +38,7 @@ for(const previousVersion of ['0.1.0','0.1.9','0.1.10'])test(`older loaded plugi
   }finally{socket?.close();await client.close();await service.close();}
 });
 
-test('real MCP transport supports preflight and one-job submission; blocks path/origin escape',async()=>{
+for(const pluginVersion of [VERSION,'0.1.12'])test(`MCP transport accepts ordinary packages on ${pluginVersion} and requires a current bridge for Mermaid`,async()=>{
   const root=await mkdtemp('D:/Artifacts/RemNoteBulkImporter-test-'),imports=path.join(root,'packages'),state=path.join(root,'state');
   await mkdir(imports);const plan={schemaVersion:1,packageId:'service.canary',title:'Transport canary',nodes:[{id:'t',parentId:null,document:true,text:[{kind:'text',value:'hello'}]}]};
   const file=path.join(imports,'canary.json');await writeFile(file,JSON.stringify(plan));
@@ -55,7 +55,7 @@ test('real MCP transport supports preflight and one-job submission; blocks path/
     assert.equal((await fetch(`${base}/mcp`,{method:'POST',headers:{Origin:'https://untrusted.example'}})).status,403);
     socket=new WebSocket(`${base.replace('http','ws')}/bridge`,{origin:`http://localhost:${service.port}`});
     await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});
-    socket.send(JSON.stringify({type:'hello',pluginId:'remnote-bulk-importer',version:VERSION}));
+    socket.send(JSON.stringify({type:'hello',pluginId:'remnote-bulk-importer',version:pluginVersion}));
     socket.on('message',raw=>{
       const m=JSON.parse(raw);
       if(m.type==='status')socket.send(JSON.stringify({type:'reply',id:m.id,result:{kbId:'fixture-kb',kbName:'Test',busy:false}}));
@@ -64,6 +64,15 @@ test('real MCP transport supports preflight and one-job submission; blocks path/
         setTimeout(()=>socket.send(JSON.stringify({type:'result',jobId:m.jobId,result:{status:'complete',verified:2,rootRemId:'test-root',mapping:{t:'topic'},nodes:1,documents:1,references:0,assets:0}})),30);
       }
     });
+    if(pluginVersion!==VERSION){
+      const diagramPath=path.join(imports,'diagram.json');
+      const diagram={...plan,nodes:[{id:'diagram',parentId:null,document:false,text:[{kind:'mermaid',value:'flowchart LR\nA --> B\n'}]}]};
+      await writeFile(diagramPath,JSON.stringify(diagram));
+      const preparedDiagram=(await client.callTool({name:'bulk_import_prepare',arguments:{packagePath:diagramPath}})).structuredContent;
+      assert.equal(preparedDiagram.info.mermaid,1);
+      const blocked=await client.callTool({name:'bulk_import_start',arguments:{jobId:preparedDiagram.jobId}});
+      assert.equal(blocked.isError,true);assert.match(blocked.content[0].text,/Reload/);
+    }
     const started=(await client.callTool({name:'bulk_import_start',arguments:{jobId:prepared.jobId}})).structuredContent;assert.ok(['running','complete'].includes(started.status));
     await new Promise(r=>setTimeout(r,80));
     const result=(await client.callTool({name:'bulk_import_job',arguments:{jobId:prepared.jobId}})).structuredContent;assert.equal(result.status,'complete');assert.equal(result.result.verified,2);

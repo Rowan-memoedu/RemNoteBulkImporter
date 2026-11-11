@@ -128,7 +128,7 @@ def validate(folder):
             expected=source_html.get_text()
             actual=''.join(BeautifulSoup(parser.renderInline(s['value']),'html.parser').get_text() if s['kind']=='markdown' else s.get('value','') for s in native['text'])
             require(normal(expected)==normal(actual),'HTML visible text changed: '+a['id'])
-        elif a['kind']=='code':require(native['text']==[{'kind':'code','value':a['text']}],'Code bytes changed')
+        elif a['kind'] in ('code','mermaid'):require(native['text']==[{'kind':a['kind'],'value':a['text']}],'Code bytes or type changed')
         elif a['kind']=='image':require(file_sha(a['path'])==a['sha256'],'Source image changed')
         formulas+=sum(s['kind']=='latex' for s in native['text'])
         require(native['document']==(native['id'] in documents),'Unexpected body Document')

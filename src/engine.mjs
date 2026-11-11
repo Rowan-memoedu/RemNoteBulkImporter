@@ -20,6 +20,7 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
   assert(info.hash === request.packageHash,'Package hash mismatch');
   const kbId = await adapter.kbId();
   assert(kbId === request.kbId,'Active knowledge base differs from submitted destination');
+  if (plan.nodes.some(n => n.text[0].kind === 'mermaid')) await adapter.requireMermaid();
   const destination = request.parentRemId ?? null;
   if(destination) assert(await adapter.find(destination),'Destination Rem not found');
   let cp = await adapter.load(info.hash);
@@ -94,6 +95,7 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
         assert(actual===initial || actual===canonical,`Imported text was edited (${n.id}); refusing overwrite`);
         assert(rem.parent===parentFor(n),`Imported node moved (${n.id}); refusing mutation`);
         await adapter.setText(rem,rich);
+        if (n.text[0].kind === 'mermaid') await adapter.markMermaid(rem);
         await adapter.disablePractice(rem);
       }
     });
@@ -125,6 +127,9 @@ export async function runImport(adapter,plan,request,{progress=()=>{},shouldPaus
     const richMatches=adapter.matchesExpected?await adapter.matchesExpected(rem.text??[],cp.expected[n.id]):await sha256(await adapter.canonical(rem.text ?? []))===cp.expected[n.id];
     if(!richMatches){adapter.context?.({phase:'verify',index:start+offset,nodeId:n.id});await adapter.diagnoseMismatch?.(n,cp.mapping,plan.assets??{},rem.text??[],cp.expected[n.id]);}
     assert(richMatches,`Readback RichText mismatch ${n.id}`);
+    if (n.text[0].kind === 'mermaid') {
+      assert(await adapter.verifyMermaid(rem,n.text[0].value),`Readback Mermaid source or Power-up mismatch ${n.id}`);
+    }
     assert(!await adapter.practiceEnabled(rem),`Unexpected practice card ${n.id}`);
     const actualRefs=await adapter.refs(rem),expectedRefs=adapter.expectedRefs?await adapter.expectedRefs(n,cp.mapping):n.text.filter(s=>s.kind==='ref').map(s=>cp.mapping[s.targetId]);
     assert(stableJSON([...new Set(actualRefs)].sort())===stableJSON([...new Set(expectedRefs)].sort()),`Readback reference targets mismatch ${n.id}`);

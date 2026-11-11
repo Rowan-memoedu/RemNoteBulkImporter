@@ -36,6 +36,28 @@ class MockAdapter {
 const request=async p=>({packageHash:(await inspectPackage(p)).hash,kbId:'kb-A',parentRemId:null});
 const options={batchSize:2,yieldMs:0};
 
+test('Mermaid requires its Power-up before writes and verifies the native diagram on readback',async()=>{
+  const a=new MockAdapter(),p=fixture();
+  const diagram={id:'diagram',parentId:'foundation',document:false,text:[{kind:'mermaid',value:'flowchart LR\n  A --> B\n'}]};
+  p.nodes.push(diagram);
+  const r=await request(p);
+  a.requireMermaid=async()=>{throw new Error('Mermaid Power-up missing');};
+  await assert.rejects(runImport(a,p,r,options),/Power-up missing/);
+  assert.equal(a.creates,0);
+  a.requireMermaid=async()=>{};
+  a.markMermaid=async rem=>{a.rems.get(rem._id).mermaid=true;};
+  a.verifyMermaid=async(rem,source)=>rem.mermaid&&rem.text.length===1&&rem.text[0].value===source;
+  const result=await runImport(a,p,r,options);
+  const imported=a.rems.get(result.mapping.diagram);
+  assert.equal(result.mermaid,1);
+  assert.equal(imported.parent,result.mapping.foundation);
+  assert.deepEqual(imported.text,diagram.text);
+  imported.mermaid=false;
+  await assert.rejects(runImport(a,p,r,options),/Readback Mermaid source or Power-up mismatch/);
+  diagram.text.unshift({kind:'text',value:'Not diagram source'});
+  await assert.rejects(inspectPackage(p),/requires its own outline node/);
+});
+
 test('SDK mailto reference checks resume the same completed writes and reject other targets',async()=>{
   const a=new MockAdapter(),p={schemaVersion:1,packageId:'mailto.fixture',title:'Mailto fixture',nodes:[
     {id:'contact',parentId:null,document:false,text:[{kind:'markdown',value:'[Contact](mailto:fixture@example.org)'}]},

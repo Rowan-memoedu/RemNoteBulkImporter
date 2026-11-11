@@ -1,18 +1,17 @@
 """Deterministic authored Markdown outline adapter; shared assets and MCP delivery.
 
-One list item is one Rem, including its paragraphs, equations and code. Only an
-initial H1 becomes the import root. No inference, categorization or LLM calls.
+One list item is one Rem, including its paragraphs, equations and code. Mermaid
+gets a separate Rem when sharing a list item with prose. Only an initial H1
+becomes the import root. No inference, categorization or LLM calls.
 Unsupported/ambiguous source structures fail before any RemNote write.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
-from .common import REPO, file_sha, load, require, save, sha
+from .common import REPO, file_sha, load, require, save
 
 
 def parse(text, fallback_title):
@@ -73,25 +72,6 @@ def parse(text, fallback_title):
          'line':n['line']} for n in nodes]}
 
 
-def mermaid_image(source,assets):
-    library=Path(os.getenv('RBI_MERMAID_LIBRARY','D:/Caches/ProgressiveReading/render-assets/mermaid-10.6.1.min.js'))
-    runtime=Path(os.getenv('PROGRESSIVE_READING_VIDEO_PYTHON','D:/Caches/ProgressiveReading/videobook-python/Scripts/python.exe'))
-    script=REPO/'consumers/render-outline-mermaid.py'
-    require(library.is_file() and runtime.is_file(),'Existing Mermaid reading-renderer runtime is missing')
-    identity={'source_sha256':sha(source),'library_sha256':file_sha(library),'renderer_sha256':file_sha(script)}
-    key=sha(str(identity));directory=assets.folder/'diagrams';directory.mkdir(exist_ok=True)
-    original=directory/(key+'.mmd');image=directory/(key+'.png');receipt=directory/(key+'.json')
-    if receipt.exists():
-        previous=load(receipt)
-        require(previous['identity']==identity and file_sha(original)==sha(source) and file_sha(image)==previous['image_sha256'],'Frozen Mermaid rendering changed')
-    else:
-        original.write_text(source,encoding='utf8',newline='\n')
-        result=subprocess.run([str(runtime),str(script),str(original),str(library),str(image)],capture_output=True,text=True,encoding='utf8',timeout=120)
-        require(result.returncode==0 and image.is_file(),'Mermaid diagram rendering failed: '+result.stderr[-1000:])
-        save(receipt,{'identity':identity,'source':str(original),'image_sha256':file_sha(image),'render':json.loads(result.stdout)})
-    return {'kind':'image','assetId':assets.add_file(image)}
-
-
 def rich_text(text,assets,base):
     from .render import segments, math_split
     # The shared HTML converter folds whitespace. Explicit br elements retain
@@ -110,26 +90,51 @@ def rich_text(text,assets,base):
         if code:
             if re.fullmatch(re.escape(code[0])+r'{'+str(len(code))+r',}\s*',line):
                 content='\n'.join(code_lines)+'\n'
-                result.append(mermaid_image(content,assets) if language=='mermaid' else {'kind':'code','value':content})
+                result.append({'kind':'mermaid' if language=='mermaid' else 'code','value':content})
                 code=None;language=None;code_lines=[]
             else:code_lines.append(line)
         elif match:=re.fullmatch(r'(`{3,}|~{3,})[^`~]*',line):
-            flush();code=match[1];language=line[len(code):].strip().lower()
+            flush();code=match[1]
+            info=line[len(code):].strip().split(maxsplit=1)
+            language=info[0].casefold() if info else None
         else:prose.append(line)
     require(code is None,'Unclosed code fence');flush()
     return result or [{'kind':'text','value':''}]
+
+
+def outline_nodes(node,runs):
+    """The Mermaid widget reads the entire Rem as source, so isolate each fence."""
+    chunks=[]
+    prose=[]
+    for run in runs:
+        if run['kind'] != 'mermaid':
+            prose.append(run)
+            continue
+        if prose:
+            chunks.append(prose)
+            prose=[]
+        chunks.append([run])
+    if prose:
+        chunks.append(prose)
+    for index,chunk in enumerate(chunks):
+        yield {'id':node['id'] if index==0 else f"{node['id']}.part-{index}",
+               'parentId':node['parentId'] if index==0 else node['id'],
+               'document':False,'text':chunk}
 
 
 def convert(source,folder,title=None):
     from .render import Assets
     tree=parse(source.read_text(encoding='utf-8-sig'),source.stem)
     assets=Assets(folder)
-    nodes=[{'id':n['id'],'parentId':n['parentId'],'document':False,
-            'text':rich_text(n['text'],assets,source.parent)} for n in tree['nodes']]
+    nodes=[];source_lines={}
+    for node in tree['nodes']:
+        for part in outline_nodes(node,rich_text(node['text'],assets,source.parent)):
+            nodes.append(part)
+            source_lines[part['id']]=node['line']
     bundle={'schemaVersion':1,'packageId':'material.'+file_sha(source)[:24]+'.outline.v1',
             'title':title or tree['title'],'nodes':nodes,'assets':assets.records,
             'provenance':{'sourceSha256':file_sha(source),'structureBasis':'source-outline',
-                          'structureProvider':'deterministic','sourceLines':{n['id']:n['line'] for n in tree['nodes']}}}
+                          'structureProvider':'deterministic','sourceLines':source_lines}}
     return tree,bundle,assets.trace
 
 

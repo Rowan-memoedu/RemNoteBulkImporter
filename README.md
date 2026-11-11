@@ -27,7 +27,7 @@ Requires Node 22+ and the official RemNote plugin SDK. `npm ci` restores pinned 
 1. `npm run build` writes only to `D:/Artifacts/RemNoteBulkImporter/plugin`.
 2. `npm start` serves plugin assets and the independent MCP endpoint on loopback port **43106**. It never connects to the old bridge on 43101/43102/43103.
 3. In RemNote's developer-plugin entry (Settings → Plugins → Build → Develop from localhost), add `http://localhost:43106`. The official installation UI wording may vary by RemNote version. Installing this plugin is a one-time manual step; the existing RemNote MCP does not expose plugin installation.
-4. `node src/cli.mjs status` verifies the loaded plugin version and active knowledge base. A subsequent build does not prove that RemNote has reloaded it. The service rejects imports from an older loaded plugin; reload the developer plugin before resuming. The existing MCP does not expose plugin reload.
+4. `node src/cli.mjs status` verifies the loaded plugin version and active knowledge base. Reload the developer plugin to use new package features. Version 0.1.12 can still import packages without Mermaid when connected to service 0.1.13. The existing MCP does not expose plugin reload.
 
 The plugin uses native commands/toasts instead of a custom web control panel. `rbi` in RemNote's command menu shows connection status. SDK permission is Read/Create/Modify plus knowledge-base identity; no delete permission is requested. Disable the plugin and stop this one local process to unload it; imported data remains in RemNote.
 
@@ -62,7 +62,7 @@ The MCP endpoint is `http://127.0.0.1:43106/mcp`. Tool names: `bulk_import_statu
 }
 ```
 
-Parents must appear before children; references may target later nodes. Array order is sibling order. All references resolve by package-local ID, never by title. Supported text segments are `text`, `markdown`, `latex` (`block`: boolean), `code`, `ref` (`targetId`), and `image` (`assetId`). Images must be embedded PNG/JPEG/WebP/GIF assets with matching MIME, base64 bytes and SHA-256. SVG is intentionally not accepted as executable input; rasterize diagrams outside RemNote. The package allows source provenance as opaque JSON; it never executes source text or interprets it as instructions.
+Parents must appear before children; references may target later nodes. Array order is sibling order. All references resolve by package-local ID, never by title. Supported text segments are `text`, `markdown`, `latex` (`block`: boolean), `code`, `mermaid`, `ref` (`targetId`), and `image` (`assetId`). A `mermaid` segment holds the editable diagram source and occupies its own outline node. Import requires the official Mermaid Power-up in the target knowledge base. Images must be embedded PNG/JPEG/WebP/GIF assets with matching MIME, base64 bytes and SHA-256. SVG image sources can be rasterized outside RemNote. The package allows source provenance as opaque JSON.
 
 Full readback checks every imported node's RichText hash, parent, document flag, direct child order, disabled practice state and exact reference targets. Incomplete/edited/missing nodes fail the audit instead of producing a success receipt. Current limits: 100,000 nodes, 64 MiB text and 256 MiB decoded assets. One long global transaction is intentionally avoided because the SDK warns that it can block RemNote.
 
